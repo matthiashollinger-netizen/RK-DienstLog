@@ -1,8 +1,10 @@
 {
-  "version": "2.8.2",
-  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.8.2/RK_DienstLog_2.8.2_mac.zip",
+  "version": "2.8.3",
+  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.8.3/RK_DienstLog_2.8.3_mac.zip",
   "windows_url": "",
   "changelog": [
-    "Script anpassung für Auto Update"
+    "Auto-Update robuster gemacht",
+    "Backup/Restore beim Aktualisieren ergänzt",
+    "Rechte und Quarantine-Attribute werden nach dem Update korrigiert"
   ]
 }
