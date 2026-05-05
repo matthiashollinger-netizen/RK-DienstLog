@@ -1,9 +1,8 @@
 {
-  "version": "2.8.1",
-  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.8.1/RK_DienstLog_2.8.1_mac.zip",
+  "version": "2.8.2",
+  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.8.2/RK_DienstLog_2.8.2_mac.zip",
   "windows_url": "",
   "changelog": [
-    "Menüpunkt Hilfe > Changelog ergänzt",
-    "Changelog-Fenster mit bisherigen Änderungen ergänzt"
+    "Script anpassung für Auto Update"
   ]
 }
