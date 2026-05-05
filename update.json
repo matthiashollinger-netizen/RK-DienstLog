@@ -1,11 +1,10 @@
 {
-  "version": "2.8.5",
-  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.8.5/RK_DienstLog_2.8.5_mac.zip",
-  "windows_url": "",
+  "version": "2.8.6",
+  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.8.6/RK_DienstLog_2.8.6_mac.zip",
+  "windows_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.8.6/RK_DienstLog_Setup_2.8.6.exe",
   "changelog": [
-    "Auto-Update finalisiert und macOS-App-Bundle-Handling stabilisiert",
-    "Update-Entpacken erfolgt mit macOS ditto statt Python zipfile",
-    "Update-Installation nutzt Staging, Backup und Restore bei Fehlern",
-    "Rechte, Quarantine-Attribute und App-Start werden nach dem Update korrigiert"
+    "Windows Auto-Update ergänzt",
+    "Windows lädt künftig den aktuellen Installer herunter und startet ihn automatisch",
+    "Update-Logik unterscheidet nun zwischen macOS ZIP-Update und Windows Installer-Update"
   ]
 }
