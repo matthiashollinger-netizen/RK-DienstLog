@@ -1,0 +1,10 @@
+{
+  "version": "2.8.0",
+  "mac_zip_url": "HIER_DIREKTER_DOWNLOAD_LINK_ZUR_MAC_ZIP",
+  "windows_url": "",
+  "changelog": [
+    "Auto-Update für macOS ergänzt",
+    "Menüpunkt Hilfe > Nach Updates suchen ergänzt",
+    "Automatische Update-Prüfung beim Start ergänzt"
+  ]
+}

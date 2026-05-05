@@ -1,0 +1,6 @@
+{
+  "version": "2.8.0",
+  "app_name": "RK DienstLog",
+  "bundle_id": "at.rk.dienstlog",
+  "update_url": "HIER_DEIN_UPDATE_JSON_LINK"
+}
