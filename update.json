@@ -3,10 +3,10 @@
   "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.9.0/RK_DienstLog_2.9.0_mac.zip",
   "windows_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.9.0/RK_DienstLog_Setup_2.9.0.exe",
   "changelog": [
-    "Portal-Import verbessert",
-    "Browser öffnet direkt das RK-Portal",
-    "Button Zu Reports öffnen ergänzt",
-    "Erkennung für falsche Seite, Login-Seite und fehlende Tabelle ergänzt",
-    "Fehlermeldung bei fehlendem Playwright verbessert"
+    "Portal-Import vorerst wieder entfernt",
+    "Jahresfilter ergänzt",
+    "Monatsfilter und Jahresfilter getrennt nutzbar gemacht",
+    "Import kann bestehende Daten ersetzen oder erweitern",
+    "Beim Erweitern werden doppelte Einträge erkannt und übersprungen"
   ]
 }
