@@ -1,10 +1,11 @@
 {
-  "version": "2.8.4",
-  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.8.4/RK_DienstLog_2.8.4_mac.zip",
+  "version": "2.8.5",
+  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.8.5/RK_DienstLog_2.8.5_mac.zip",
   "windows_url": "",
   "changelog": [
-    "Fix: Auto-Update entpackt macOS App-Bundles jetzt mit ditto",
-    "Fix: Beschädigte Python-Framework-Datei nach Update behoben",
-    "macOS-App-Struktur bleibt beim Update erhalten"
+    "Auto-Update finalisiert und macOS-App-Bundle-Handling stabilisiert",
+    "Update-Entpacken erfolgt mit macOS ditto statt Python zipfile",
+    "Update-Installation nutzt Staging, Backup und Restore bei Fehlern",
+    "Rechte, Quarantine-Attribute und App-Start werden nach dem Update korrigiert"
   ]
 }
