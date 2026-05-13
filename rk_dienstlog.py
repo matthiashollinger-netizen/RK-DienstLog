@@ -78,6 +78,11 @@ APP_UPDATE_URL = VERSION_INFO.get("update_url", "")
 
 CHANGELOG_TEXT = """RK DienstLog – Changelog
 
+Version 2.9.3
+- GitHub Actions CI/CD eingerichtet: macOS und Windows Build vollautomatisch.
+- Spec-Fix: relativer Icon-Pfad für Build-Kompatibilität.
+- rk_dienstlog_icon.png wird jetzt korrekt im App-Bundle mitgeliefert.
+
 Version 2.9.2
 - Dubletten-Erkennung beim erweiterten Import verbessert.
 - Monatsfilter bleibt abhängig vom gewählten Jahr optimiert.

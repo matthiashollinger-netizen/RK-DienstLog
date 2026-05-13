@@ -1,12 +1,11 @@
 {
-  "version": "2.9.2",
-  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.9.2/RK_DienstLog_2.9.2_mac.zip",
-  "windows_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.9.2/RK_DienstLog_Setup_2.9.2.exe",
+  "version": "2.9.3",
+  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.9.3/RK_DienstLog_2.9.3_mac.zip",
+  "windows_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.9.3/RK_DienstLog_Setup_2.9.3.exe",
   "changelog": [
-    "Phase 1 gestartet",
-    "Save & Load vorbereitet",
-    ".rkdienstlog Konzept ergänzt",
-    "robuste Dubletten-Erkennung vorbereitet",
-    "UX Verbesserungen vorbereitet"
+    "GitHub Actions CI/CD eingerichtet",
+    "macOS und Windows Build vollautomatisch",
+    "Spec-Fix: relativer Icon-Pfad",
+    "rk_dienstlog_icon.png im App-Bundle inkludiert"
   ]
 }
