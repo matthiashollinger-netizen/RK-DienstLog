@@ -76,6 +76,29 @@ APP_VERSION = VERSION_INFO.get("version", "0.0.0")
 APP_BUNDLE_ID = VERSION_INFO.get("bundle_id", "at.rk.dienstlog")
 APP_UPDATE_URL = VERSION_INFO.get("update_url", "")
 
+# Only allow downloads from the official release repository
+_ALLOWED_DOWNLOAD_PREFIX = "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/"
+_VERSION_RE = re.compile(r"^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$")
+
+
+def _sanitize_version(v: str) -> str:
+    """Strip to a safe semver string; raise if obviously invalid."""
+    v = str(v).strip()
+    if not _VERSION_RE.match(v):
+        raise ValueError(f"Ungültige Versionsnummer vom Server: {v!r}")
+    return v
+
+
+def _validate_download_url(url: str) -> str:
+    """Raise if url is not from the expected release host; return url otherwise."""
+    if not isinstance(url, str) or not url.startswith(_ALLOWED_DOWNLOAD_PREFIX):
+        raise ValueError(
+            f"Download-URL ist nicht vom erwarteten Host.\n\n"
+            f"Erwartet: {_ALLOWED_DOWNLOAD_PREFIX}…\n"
+            f"Erhalten: {url!r}"
+        )
+    return url
+
 CHANGELOG_TEXT = """RK DienstLog – Changelog
 
 Version 3.0.0
@@ -514,36 +537,20 @@ def get_current_app_bundle() -> Path | None:
 
 
 def get_ssl_context():
-    """Robuster SSL-Kontext für Windows/PyInstaller/GitHub Downloads."""
+    """SSL context with certificate validation enforced; certifi preferred."""
     try:
         if certifi is not None:
             return ssl.create_default_context(cafile=certifi.where())
     except Exception:
         pass
-
-    try:
-        return ssl.create_default_context()
-    except Exception:
-        return None
+    return ssl.create_default_context()  # always validates — never returns None
 
 
 def download_file_secure(url: str, target_path: Path):
-    """Lädt Dateien mit explizitem Zertifikats-Kontext herunter."""
+    """Downloads with enforced SSL certificate validation."""
     context = get_ssl_context()
-
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": f"{APP_TITLE}/{APP_VERSION}"
-        }
-    )
-
-    if context is not None:
-        response = urllib.request.urlopen(request, context=context, timeout=60)
-    else:
-        response = urllib.request.urlopen(request, timeout=60)
-
-    with response:
+    request = urllib.request.Request(url, headers={"User-Agent": f"{APP_TITLE}/{APP_VERSION}"})
+    with urllib.request.urlopen(request, context=context, timeout=60) as response:
         with open(target_path, "wb") as f:
             shutil.copyfileobj(response, f)
 
@@ -1135,6 +1142,7 @@ class RktApp(ctk.CTk):
         self._dirty = False
         self._rows_search_var = ctk.StringVar()
         self._heatmap_year_var = ctk.StringVar()
+        self._hours_period_var = ctk.StringVar(value="Gesamt")
 
         self.create_ui()
         self.setup_macos_menu()
@@ -1263,7 +1271,7 @@ class RktApp(ctk.CTk):
 
         ctk.CTkLabel(main, text="Auswertung", font=ctk.CTkFont(size=30, weight="bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 16))
 
-        self.card_total = self.create_stat_card(main, "Gesamtstunden", "0,00 h")
+        self.card_total = self._create_hours_card(main)
         self.card_total.grid(row=1, column=0, padx=(0, 12), pady=(0, 18), sticky="ew")
 
         self.card_count = self.create_stat_card(main, "Dienste", "0")
@@ -1367,6 +1375,65 @@ class RktApp(ctk.CTk):
 
         card.value_label = value_label
         return card
+
+    def _create_hours_card(self, parent):
+        card = ctk.CTkFrame(parent, corner_radius=18)
+        card.grid_columnconfigure(0, weight=1)
+
+        self._hours_label_widget = ctk.CTkLabel(card, text="Gesamtstunden",
+                                                 text_color="#AAB2C0", font=ctk.CTkFont(size=13))
+        self._hours_label_widget.grid(row=0, column=0, padx=18, pady=(14, 2), sticky="w")
+
+        self._hours_value_label = ctk.CTkLabel(card, text="0,00 h",
+                                                font=ctk.CTkFont(size=25, weight="bold"))
+        self._hours_value_label.grid(row=1, column=0, padx=18, pady=(0, 6), sticky="w")
+
+        ctk.CTkSegmentedButton(
+            card,
+            values=["Gesamt", "/Tag", "/Woche", "/Monat", "/Jahr"],
+            variable=self._hours_period_var,
+            command=lambda _: self._on_period_change(),
+            font=ctk.CTkFont(size=11),
+            height=26,
+        ).grid(row=2, column=0, padx=12, pady=(0, 12), sticky="ew")
+
+        card.value_label = self._hours_value_label  # compatibility
+        return card
+
+    def _on_period_change(self):
+        df = self.get_filtered_df()
+        h_val, h_lbl = self._compute_period_hours(df)
+        self._hours_value_label.configure(text=h_val)
+        self._hours_label_widget.configure(text=h_lbl)
+
+    def _compute_period_hours(self, df) -> tuple[str, str]:
+        """Returns (value_text, card_label) for the currently selected period."""
+        total = float(df["Std."].sum()) if not df.empty else 0.0
+        period = self._hours_period_var.get()
+
+        if period == "Gesamt" or df.empty:
+            return f"{format_hours(total)} h", "Gesamtstunden"
+
+        tmp = df.copy()
+        tmp["_date"] = pd.to_datetime(tmp["Datum"], dayfirst=True, errors="coerce")
+        valid = tmp.dropna(subset=["_date"])
+        if valid.empty:
+            return f"{format_hours(total)} h", "Gesamtstunden"
+
+        if period == "/Tag":
+            span = max((valid["_date"].max() - valid["_date"].min()).days + 1, 1)
+            return f"{format_hours(total / span)} h", "Ø Stunden / Tag"
+        if period == "/Woche":
+            span = max((valid["_date"].max() - valid["_date"].min()).days + 1, 7)
+            return f"{format_hours(total / (span / 7))} h", "Ø Stunden / Woche"
+        if period == "/Monat":
+            n = max(valid["_date"].dt.strftime("%Y-%m").nunique(), 1)
+            return f"{format_hours(total / n)} h", "Ø Stunden / Monat"
+        if period == "/Jahr":
+            n = max(valid["_date"].dt.year.nunique(), 1)
+            return f"{format_hours(total / n)} h", "Ø Stunden / Jahr"
+
+        return f"{format_hours(total)} h", "Gesamtstunden"
 
     def create_tree(self, parent, columns, row=0):
         wrapper = ctk.CTkFrame(parent, fg_color="transparent")
@@ -1840,7 +1907,9 @@ class RktApp(ctk.CTk):
         count = int(len(df))
         avg = total / count if count else 0.0
 
-        self.card_total.value_label.configure(text=f"{format_hours(total)} h")
+        h_val, h_lbl = self._compute_period_hours(df)
+        self._hours_value_label.configure(text=h_val)
+        self._hours_label_widget.configure(text=h_lbl)
         self.card_count.value_label.configure(text=str(count))
         self.card_avg.value_label.configure(text=f"{format_hours(avg)} h")
 
@@ -2237,13 +2306,7 @@ class RktApp(ctk.CTk):
                     APP_UPDATE_URL,
                     headers={"User-Agent": f"{APP_TITLE}/{APP_VERSION}"}
                 )
-
-                if context is not None:
-                    response = urllib.request.urlopen(request, context=context, timeout=12)
-                else:
-                    response = urllib.request.urlopen(request, timeout=12)
-
-                with response:
+                with urllib.request.urlopen(request, context=context, timeout=12) as response:
                     raw = response.read().decode("utf-8")
                     update_info = json.loads(raw)
 
@@ -2259,7 +2322,11 @@ class RktApp(ctk.CTk):
             messagebox.showerror("Update-Prüfung fehlgeschlagen", str(error))
 
     def handle_update_info(self, update_info: dict, silent=False):
-        online_version = update_info.get("version", "0.0.0")
+        try:
+            online_version = _sanitize_version(update_info.get("version", ""))
+        except ValueError as e:
+            self.handle_update_error(e, silent=silent)
+            return
 
         if not is_newer_version(online_version, APP_VERSION):
             self.set_status("Keine neue Version verfügbar")
@@ -2299,13 +2366,16 @@ class RktApp(ctk.CTk):
     def download_and_install_windows_update(self, update_info: dict):
         installer_url = update_info.get("windows_url") or update_info.get("windows_installer_url")
         if not installer_url:
-            messagebox.showerror(
-                "Update nicht möglich",
-                "In der update.json fehlt windows_url."
-            )
+            messagebox.showerror("Update nicht möglich", "In der update.json fehlt windows_url.")
             return
 
-        online_version = update_info.get("version", "neu")
+        try:
+            installer_url = _validate_download_url(installer_url)
+            online_version = _sanitize_version(update_info.get("version", ""))
+        except ValueError as e:
+            messagebox.showerror("Update nicht möglich", str(e))
+            return
+
         self.show_update_progress(f"Windows Update {online_version} wird heruntergeladen …")
 
         def worker():
@@ -2313,7 +2383,8 @@ class RktApp(ctk.CTk):
                 update_dir = APP_DIR / "updates"
                 update_dir.mkdir(exist_ok=True)
 
-                installer_path = update_dir / f"RK_DienstLog_Setup_{online_version}.exe"
+                safe_ver = re.sub(r"[^0-9.]", "", online_version)
+                installer_path = update_dir / f"RK_DienstLog_Setup_{safe_ver}.exe"
                 download_file_secure(installer_url, installer_path)
 
                 self.after(0, lambda: self.finish_windows_update(installer_path, online_version))
@@ -2368,13 +2439,16 @@ class RktApp(ctk.CTk):
 
         zip_url = update_info.get("mac_zip_url")
         if not zip_url:
-            messagebox.showerror(
-                "Update nicht möglich",
-                "In der update.json fehlt mac_zip_url."
-            )
+            messagebox.showerror("Update nicht möglich", "In der update.json fehlt mac_zip_url.")
             return
 
-        online_version = update_info.get("version", "neu")
+        try:
+            zip_url = _validate_download_url(zip_url)
+            online_version = _sanitize_version(update_info.get("version", ""))
+        except ValueError as e:
+            messagebox.showerror("Update nicht möglich", str(e))
+            return
+
         self.show_update_progress(f"Update {online_version} wird heruntergeladen …")
 
         def worker():
@@ -2382,8 +2456,9 @@ class RktApp(ctk.CTk):
                 update_dir = APP_DIR / "updates"
                 update_dir.mkdir(exist_ok=True)
 
-                zip_path = update_dir / f"RK_DienstLog_{online_version}_mac.zip"
-                extract_dir = update_dir / f"RK_DienstLog_{online_version}_extract"
+                safe_ver = re.sub(r"[^0-9.]", "", online_version)
+                zip_path = update_dir / f"RK_DienstLog_{safe_ver}_mac.zip"
+                extract_dir = update_dir / f"RK_DienstLog_{safe_ver}_extract"
 
                 if extract_dir.exists():
                     shutil.rmtree(extract_dir)
