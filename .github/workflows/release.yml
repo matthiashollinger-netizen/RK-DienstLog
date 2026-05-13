@@ -19,7 +19,7 @@ jobs:
         run: |
           pip install \
             customtkinter pandas matplotlib pyinstaller pillow \
-            pyobjc-framework-Cocoa pyobjc-framework-AppKit \
+            pyobjc-framework-Cocoa \
             certifi openpyxl
 
       - name: Build app bundle
