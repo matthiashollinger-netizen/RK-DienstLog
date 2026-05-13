@@ -101,6 +101,9 @@ def _validate_download_url(url: str) -> str:
 
 CHANGELOG_TEXT = """RK DienstLog – Changelog
 
+Version 3.0.2
+- Gesamtstunden-Karte: Toggle rechnet Stunden um in Tage / Wochen / Monate / Jahre (Basis: 8 h/Tag).
+
 Version 3.0.1
 - Gesamtstunden-Karte: Toggle für Gesamt / Ø pro Tag / Woche / Monat / Jahr.
 - Security: SSL-Zertifikatsvalidierung immer aktiv (kein None-Fallback mehr).
@@ -1396,7 +1399,7 @@ class RktApp(ctk.CTk):
 
         ctk.CTkSegmentedButton(
             card,
-            values=["Gesamt", "/Tag", "/Woche", "/Monat", "/Jahr"],
+            values=["Gesamt", "Tage", "Wochen", "Monate", "Jahre"],
             variable=self._hours_period_var,
             command=lambda _: self._on_period_change(),
             font=ctk.CTkFont(size=11),
@@ -1412,32 +1415,31 @@ class RktApp(ctk.CTk):
         self._hours_value_label.configure(text=h_val)
         self._hours_label_widget.configure(text=h_lbl)
 
+    # Umrechnungsbasis: 1 Arbeitstag = 8 h
+    _HOURS_PER_DAY = 8.0
+    _HOURS_PER_WEEK = 40.0
+    _HOURS_PER_MONTH = 160.0
+    _HOURS_PER_YEAR = 1920.0
+
     def _compute_period_hours(self, df) -> tuple[str, str]:
         """Returns (value_text, card_label) for the currently selected period."""
         total = float(df["Std."].sum()) if not df.empty else 0.0
         period = self._hours_period_var.get()
 
-        if period == "Gesamt" or df.empty:
+        if period == "Gesamt":
             return f"{format_hours(total)} h", "Gesamtstunden"
-
-        tmp = df.copy()
-        tmp["_date"] = pd.to_datetime(tmp["Datum"], dayfirst=True, errors="coerce")
-        valid = tmp.dropna(subset=["_date"])
-        if valid.empty:
-            return f"{format_hours(total)} h", "Gesamtstunden"
-
-        if period == "/Tag":
-            span = max((valid["_date"].max() - valid["_date"].min()).days + 1, 1)
-            return f"{format_hours(total / span)} h", "Ø Stunden / Tag"
-        if period == "/Woche":
-            span = max((valid["_date"].max() - valid["_date"].min()).days + 1, 7)
-            return f"{format_hours(total / (span / 7))} h", "Ø Stunden / Woche"
-        if period == "/Monat":
-            n = max(valid["_date"].dt.strftime("%Y-%m").nunique(), 1)
-            return f"{format_hours(total / n)} h", "Ø Stunden / Monat"
-        if period == "/Jahr":
-            n = max(valid["_date"].dt.year.nunique(), 1)
-            return f"{format_hours(total / n)} h", "Ø Stunden / Jahr"
+        if period == "Tage":
+            val = total / self._HOURS_PER_DAY
+            return f"{format_hours(val)} Tage", f"Gesamtstunden in Tagen  (1 Tag = {int(self._HOURS_PER_DAY)} h)"
+        if period == "Wochen":
+            val = total / self._HOURS_PER_WEEK
+            return f"{format_hours(val)} Wochen", f"Gesamtstunden in Wochen  (1 Woche = {int(self._HOURS_PER_WEEK)} h)"
+        if period == "Monate":
+            val = total / self._HOURS_PER_MONTH
+            return f"{format_hours(val)} Monate", f"Gesamtstunden in Monaten  (1 Monat = {int(self._HOURS_PER_MONTH)} h)"
+        if period == "Jahre":
+            val = total / self._HOURS_PER_YEAR
+            return f"{format_hours(val)} Jahre", f"Gesamtstunden in Jahren  (1 Jahr = {int(self._HOURS_PER_YEAR)} h)"
 
         return f"{format_hours(total)} h", "Gesamtstunden"
 
