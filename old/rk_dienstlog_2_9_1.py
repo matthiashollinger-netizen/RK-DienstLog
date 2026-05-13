@@ -78,11 +78,6 @@ APP_UPDATE_URL = VERSION_INFO.get("update_url", "")
 
 CHANGELOG_TEXT = """RK DienstLog – Changelog
 
-Version 2.9.2
-- Dubletten-Erkennung beim erweiterten Import verbessert.
-- Monatsfilter bleibt abhängig vom gewählten Jahr optimiert.
-- Save & Load bleibt als nächster sauberer Umsetzungsschritt vorgemerkt.
-
 Version 2.9.1
 - Dubletten-Erkennung beim erweiterten Import verbessert.
 - Doppelte Einträge werden nun robuster über Datum, Art, Einheit und Stunden erkannt.
@@ -275,8 +270,8 @@ def clean_unit_display(value) -> str:
 def prepare_duplicate_key(row) -> tuple:
     """Robuster Schlüssel zur Erkennung doppelter Einträge.
 
-    Beschreibung wird berücksichtigt, damit legitime gleiche Dienste am
-    gleichen Tag nicht fälschlich als doppelt erkannt werden.
+    Bewusst ohne Beschreibung, weil Portal-Texte/Leerzeichen leicht variieren können.
+    Primär eindeutig genug: Datum + Art + Einheit + Stunden.
     """
     date_value = clean_text(row.get("Datum", ""))
     try:
@@ -286,18 +281,12 @@ def prepare_duplicate_key(row) -> tuple:
     except Exception:
         pass
 
-    def norm(value):
-        value = clean_text(value).lower().strip()
-        value = re.sub(r"\\s+", " ", value)
-        value = value.replace("–", "-").replace("—", "-")
-        return value
-
-    art = norm(row.get("Art", ""))
-    unit = norm(clean_unit_display(row.get("Einheit", "")))
-    desc = norm(row.get("Beschreibung", ""))
+    art = re.sub(r"\s+", " ", clean_text(row.get("Art", "")).lower()).strip()
+    unit = re.sub(r"\s+", " ", clean_unit_display(row.get("Einheit", "")).lower()).strip()
     hours = round(float(clean_hours(row.get("Std.", 0))), 2)
 
-    return (date_value, art, unit, desc, hours)
+    return (date_value, art, unit, hours)
+
 
 def merge_without_duplicates(existing_df: pd.DataFrame, new_df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
     """Hängt neue Daten an bestehende an und überspringt Dubletten."""

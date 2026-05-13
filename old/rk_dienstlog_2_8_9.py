@@ -17,6 +17,7 @@ import tempfile
 import shutil
 import subprocess
 import threading
+from html.parser import HTMLParser
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -26,6 +27,11 @@ matplotlib.use("TkAgg")
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.dates as mdates
+
+try:
+    from playwright.sync_api import sync_playwright
+except Exception:
+    sync_playwright = None
 
 try:
     from PIL import Image, ImageTk
@@ -71,29 +77,18 @@ def load_version_info():
 VERSION_INFO = load_version_info()
 
 APP_TITLE = VERSION_INFO.get("app_name", "RK DienstLog")
-APP_SUBTITLE = "Dienststunden & Auswertung"
+APP_SUBTITLE = "Dienststunden, Auswertung & Update-Test"
 APP_VERSION = VERSION_INFO.get("version", "0.0.0")
 APP_BUNDLE_ID = VERSION_INFO.get("bundle_id", "at.rk.dienstlog")
 APP_UPDATE_URL = VERSION_INFO.get("update_url", "")
 
 CHANGELOG_TEXT = """RK DienstLog – Changelog
 
-Version 2.9.2
-- Dubletten-Erkennung beim erweiterten Import verbessert.
-- Monatsfilter bleibt abhängig vom gewählten Jahr optimiert.
-- Save & Load bleibt als nächster sauberer Umsetzungsschritt vorgemerkt.
-
-Version 2.9.1
-- Dubletten-Erkennung beim erweiterten Import verbessert.
-- Doppelte Einträge werden nun robuster über Datum, Art, Einheit und Stunden erkannt.
-- Monatsfilter zeigt bei ausgewähltem Jahr nur Monate mit vorhandenen Diensten an.
-
-Version 2.8.12
-- Portal-Import vorerst wieder entfernt.
-- Jahresfilter ergänzt.
-- Monatsfilter und Jahresfilter getrennt nutzbar gemacht.
-- Import kann bestehende Daten nun ersetzen oder erweitern.
-- Beim Erweitern werden doppelte Einträge erkannt und übersprungen.
+Version 2.8.9
+- Portal-Import als dritte Import-Variante vorbereitet.
+- Browser-Automation via Playwright ergänzt.
+- Daten können nach Login direkt aus der aktuellen Portal-Seite importiert werden.
+- Passwörter werden nicht gespeichert.
 
 Version 2.8.8
 - Kleine sichtbare Textänderung zum Test des Windows Auto-Updates.
@@ -270,75 +265,6 @@ def clean_unit_display(value) -> str:
     text = clean_text(value)
     text = re.sub(r"\s*\(Abteilung[^)]*\)", "", text).strip()
     return text
-
-
-def prepare_duplicate_key(row) -> tuple:
-    """Robuster Schlüssel zur Erkennung doppelter Einträge.
-
-    Beschreibung wird berücksichtigt, damit legitime gleiche Dienste am
-    gleichen Tag nicht fälschlich als doppelt erkannt werden.
-    """
-    date_value = clean_text(row.get("Datum", ""))
-    try:
-        dt = pd.to_datetime(date_value, dayfirst=True, errors="coerce")
-        if not pd.isna(dt):
-            date_value = dt.strftime("%Y-%m-%d")
-    except Exception:
-        pass
-
-    def norm(value):
-        value = clean_text(value).lower().strip()
-        value = re.sub(r"\\s+", " ", value)
-        value = value.replace("–", "-").replace("—", "-")
-        return value
-
-    art = norm(row.get("Art", ""))
-    unit = norm(clean_unit_display(row.get("Einheit", "")))
-    desc = norm(row.get("Beschreibung", ""))
-    hours = round(float(clean_hours(row.get("Std.", 0))), 2)
-
-    return (date_value, art, unit, desc, hours)
-
-def merge_without_duplicates(existing_df: pd.DataFrame, new_df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
-    """Hängt neue Daten an bestehende an und überspringt Dubletten."""
-    if existing_df.empty:
-        return new_df.copy(), len(new_df), 0
-
-    existing = existing_df.copy()
-    new = new_df.copy()
-
-    existing_keys = set(existing.apply(prepare_duplicate_key, axis=1).tolist())
-
-    rows_to_add = []
-    skipped = 0
-
-    for _, row in new.iterrows():
-        key = prepare_duplicate_key(row)
-        if key in existing_keys:
-            skipped += 1
-            continue
-
-        existing_keys.add(key)
-        rows_to_add.append(row)
-
-    if rows_to_add:
-        add_df = pd.DataFrame(rows_to_add, columns=new.columns)
-        merged = pd.concat([existing, add_df], ignore_index=True)
-    else:
-        merged = existing
-
-    # Sicherheit: auch bereits entstandene Dubletten nach gleichem Schlüssel entfernen
-    before_final = len(merged)
-    merged["_dup_key"] = merged.apply(prepare_duplicate_key, axis=1)
-    merged = merged.drop_duplicates(subset=["_dup_key"], keep="first").drop(columns=["_dup_key"])
-    skipped += before_final - len(merged)
-
-    # Nummerierung neu setzen, damit # sauber bleibt
-    if "#" in merged.columns:
-        merged["#"] = range(1, len(merged) + 1)
-
-    return merged.reset_index(drop=True), len(rows_to_add), skipped
-
 
 
 def read_input_file(path: str) -> pd.DataFrame:
@@ -531,6 +457,107 @@ def download_file_secure(url: str, target_path: Path):
         with open(target_path, "wb") as f:
             shutil.copyfileobj(response, f)
 
+
+class SimpleTableParser(HTMLParser):
+    """Kleiner HTML-Tabellenparser ohne zusätzliche Dependencies."""
+    def __init__(self):
+        super().__init__()
+        self.tables = []
+        self.current_table = None
+        self.current_row = None
+        self.current_cell = None
+        self.in_cell = False
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag == "table":
+            self.current_table = []
+        elif tag == "tr" and self.current_table is not None:
+            self.current_row = []
+        elif tag in ("td", "th") and self.current_row is not None:
+            self.current_cell = []
+            self.in_cell = True
+
+    def handle_data(self, data):
+        if self.in_cell and self.current_cell is not None:
+            self.current_cell.append(data)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in ("td", "th") and self.in_cell:
+            cell = " ".join("".join(self.current_cell).split())
+            self.current_row.append(cell)
+            self.current_cell = None
+            self.in_cell = False
+        elif tag == "tr" and self.current_table is not None and self.current_row is not None:
+            if any(str(c).strip() for c in self.current_row):
+                self.current_table.append(self.current_row)
+            self.current_row = None
+        elif tag == "table" and self.current_table is not None:
+            if self.current_table:
+                self.tables.append(self.current_table)
+            self.current_table = None
+
+
+def parse_portal_html_to_dataframe(html: str) -> pd.DataFrame:
+    parser = SimpleTableParser()
+    parser.feed(html)
+
+    expected_keywords = ["datum", "art", "einheit", "beschreibung", "std"]
+
+    for table in parser.tables:
+        if not table:
+            continue
+
+        # Header-Zeile suchen
+        header_index = None
+        for idx, row in enumerate(table[:8]):
+            normalized = [normalize_col(c) for c in row]
+            joined = " ".join(normalized)
+            if all(key in joined for key in expected_keywords[:3]) and "std" in joined:
+                header_index = idx
+                break
+
+        if header_index is None:
+            continue
+
+        headers = table[header_index]
+        rows = table[header_index + 1:]
+
+        # Auf Header-Länge normalisieren
+        normalized_rows = []
+        for row in rows:
+            if len(row) < 4:
+                continue
+
+            # Summenzeilen ignorieren
+            joined = " ".join(row).lower()
+            if "gesamt:" in joined or "davon " in joined:
+                continue
+
+            fixed = row[:len(headers)]
+            if len(fixed) < len(headers):
+                fixed += [""] * (len(headers) - len(fixed))
+
+            normalized_rows.append(fixed)
+
+        if not normalized_rows:
+            continue
+
+        df = pd.DataFrame(normalized_rows, columns=headers)
+
+        try:
+            normalized = normalize_dataframe(df)
+            if not normalized.empty:
+                return normalized
+        except Exception:
+            continue
+
+    raise ValueError(
+        "Keine passende Statistik-Tabelle gefunden. Bitte prüfe, ob du im Portal auf Reports → bestätigte bist."
+    )
+
+
 class PasteDialog(ctk.CTkToplevel):
     def __init__(self, parent, callback):
         super().__init__(parent)
@@ -680,6 +707,159 @@ class PasteDialog(ctk.CTkToplevel):
             self.destroy()
         except Exception as e:
             messagebox.showerror("Fehler beim Einlesen", str(e))
+
+
+
+class PortalImportDialog(ctk.CTkToplevel):
+    def __init__(self, parent, callback):
+        super().__init__(parent)
+        self.parent = parent
+        self.callback = callback
+        self.playwright = None
+        self.browser = None
+        self.page = None
+
+        self.title("Portal-Import")
+        self.geometry("620x430")
+        self.transient(parent)
+        self.grab_set()
+        self.bind("<Escape>", lambda event: self.close())
+        set_window_icon(self)
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(4, weight=1)
+
+        ctk.CTkLabel(
+            self,
+            text="Portal-Import",
+            font=ctk.CTkFont(size=24, weight="bold")
+        ).grid(row=0, column=0, padx=24, pady=(24, 8), sticky="w")
+
+        info = (
+            "1. Browser öffnen\n"
+            "2. Im RK-Portal selbst einloggen\n"
+            "3. Zu Reports → bestätigte wechseln und Jahr auswählen\n"
+            "4. Dann hier „Aktuelle Portal-Seite importieren“ klicken\n\n"
+            "Passwort wird nicht gespeichert."
+        )
+        ctk.CTkLabel(
+            self,
+            text=info,
+            justify="left",
+            text_color="#AAB2C0",
+            wraplength=550
+        ).grid(row=1, column=0, padx=24, pady=(0, 16), sticky="w")
+
+        self.status = ctk.CTkLabel(self, text="Browser noch nicht gestartet", text_color="#AAB2C0")
+        self.status.grid(row=2, column=0, padx=24, pady=(0, 12), sticky="w")
+
+        btns = ctk.CTkFrame(self, fg_color="transparent")
+        btns.grid(row=3, column=0, padx=24, pady=(0, 12), sticky="ew")
+        btns.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkButton(
+            btns,
+            text="Browser öffnen",
+            command=self.open_browser
+        ).grid(row=0, column=0, padx=(0, 8), sticky="w")
+
+        ctk.CTkButton(
+            btns,
+            text="Aktuelle Portal-Seite importieren",
+            command=self.import_current_page,
+            fg_color="#2FA572",
+            hover_color="#278B60"
+        ).grid(row=0, column=1, padx=8)
+
+        ctk.CTkButton(
+            btns,
+            text="Schließen",
+            command=self.close,
+            fg_color="#555B66",
+            hover_color="#464B54"
+        ).grid(row=0, column=2, padx=(8, 0))
+
+        self.log = ctk.CTkTextbox(self, font=("Consolas", 12), wrap="word")
+        self.log.grid(row=4, column=0, padx=24, pady=(0, 24), sticky="nsew")
+        self.write_log("Bereit.")
+
+    def write_log(self, text):
+        try:
+            self.log.configure(state="normal")
+            self.log.insert("end", text + "\n")
+            self.log.see("end")
+            self.log.configure(state="disabled")
+        except Exception:
+            pass
+
+    def open_browser(self):
+        if sync_playwright is None:
+            messagebox.showerror(
+                "Playwright fehlt",
+                "Für den Portal-Import muss Playwright installiert werden:\n\n"
+                "pip install playwright\n"
+                "python -m playwright install chromium\n\n"
+                "Danach die App neu bauen."
+            )
+            return
+
+        try:
+            if self.browser is not None and self.page is not None:
+                self.page.bring_to_front()
+                return
+
+            self.status.configure(text="Starte Browser …")
+            self.write_log("Starte Playwright Browser …")
+
+            self.playwright = sync_playwright().start()
+            self.browser = self.playwright.chromium.launch(headless=False)
+            self.page = self.browser.new_page()
+            self.page.goto("https://portal.s.roteskreuz.at/", wait_until="domcontentloaded", timeout=30000)
+
+            self.status.configure(text="Browser geöffnet – bitte im Portal einloggen.")
+            self.write_log("Browser geöffnet. Bitte einloggen und zu Reports → bestätigte wechseln.")
+        except Exception as e:
+            self.status.configure(text="Browser konnte nicht gestartet werden.")
+            messagebox.showerror("Browser-Start fehlgeschlagen", str(e))
+
+    def import_current_page(self):
+        if self.page is None:
+            messagebox.showwarning("Browser nicht geöffnet", "Bitte zuerst den Browser öffnen.")
+            return
+
+        try:
+            self.status.configure(text="Lese aktuelle Portal-Seite …")
+            self.write_log("Lese HTML der aktuellen Seite …")
+
+            html = self.page.content()
+            df = parse_portal_html_to_dataframe(html)
+
+            if df.empty:
+                raise ValueError("Es wurden keine Einträge erkannt.")
+
+            self.callback(df, "Portal-Import")
+            self.status.configure(text=f"Import erfolgreich: {len(df)} Datensätze")
+            self.write_log(f"Import erfolgreich: {len(df)} Datensätze erkannt.")
+            messagebox.showinfo("Portal-Import", f"{len(df)} Datensätze wurden importiert.")
+        except Exception as e:
+            self.status.configure(text="Import fehlgeschlagen.")
+            self.write_log(f"Fehler: {e}")
+            messagebox.showerror("Import fehlgeschlagen", str(e))
+
+    def close(self):
+        try:
+            if self.browser is not None:
+                self.browser.close()
+        except Exception:
+            pass
+
+        try:
+            if self.playwright is not None:
+                self.playwright.stop()
+        except Exception:
+            pass
+
+        self.destroy()
 
 
 class ExportDialog(ctk.CTkToplevel):
@@ -947,7 +1127,6 @@ class RktApp(ctk.CTk):
 
         self.df_all = pd.DataFrame(columns=["#", "Datum", "Art", "Einheit", "Beschreibung", "Std.", "*"])
         self.filter_var = ctk.StringVar(value=self.settings.get("filter_art", "RKT-FRW"))
-        self.year_filter_var = ctk.StringVar(value=self.settings.get("filter_year", "Alle"))
         self.month_filter_var = ctk.StringVar(value=self.settings.get("filter_month", "Alle"))
         self.unit_filter_var = ctk.StringVar(value=self.settings.get("filter_unit", "Alle"))
         self.theme_var = ctk.StringVar(value=initial_theme)
@@ -981,7 +1160,6 @@ class RktApp(ctk.CTk):
         settings = {
             "theme": self.theme_var.get(),
             "filter_art": self.filter_var.get(),
-            "filter_year": self.year_filter_var.get(),
             "filter_month": self.month_filter_var.get(),
             "filter_unit": self.unit_filter_var.get(),
             "chart_mode": self.current_chart_mode,
@@ -1039,32 +1217,29 @@ class RktApp(ctk.CTk):
 
         ctk.CTkButton(sidebar, text="CSV / Excel laden", command=self.load_file, height=42).grid(row=2, column=0, padx=22, pady=7, sticky="ew")
         ctk.CTkButton(sidebar, text="Copy/Paste öffnen", command=self.open_paste_dialog, height=42).grid(row=3, column=0, padx=22, pady=7, sticky="ew")
-        ctk.CTkButton(sidebar, text="Export", command=self.open_export_dialog, height=42, fg_color="#2FA572", hover_color="#278B60").grid(row=4, column=0, padx=22, pady=7, sticky="ew")
-        ctk.CTkButton(sidebar, text="Daten löschen", command=self.clear_data, height=42, fg_color="#555B66", hover_color="#464B54").grid(row=5, column=0, padx=22, pady=7, sticky="ew")
+        ctk.CTkButton(sidebar, text="Portal-Import öffnen", command=self.open_portal_import_dialog, height=42).grid(row=4, column=0, padx=22, pady=7, sticky="ew")
+        ctk.CTkButton(sidebar, text="Export", command=self.open_export_dialog, height=42, fg_color="#2FA572", hover_color="#278B60").grid(row=5, column=0, padx=22, pady=7, sticky="ew")
+        ctk.CTkButton(sidebar, text="Daten löschen", command=self.clear_data, height=42, fg_color="#555B66", hover_color="#464B54").grid(row=6, column=0, padx=22, pady=7, sticky="ew")
 
-        ctk.CTkLabel(sidebar, text="Filter", font=ctk.CTkFont(size=16, weight="bold")).grid(row=6, column=0, padx=24, pady=(24, 8), sticky="w")
+        ctk.CTkLabel(sidebar, text="Filter", font=ctk.CTkFont(size=16, weight="bold")).grid(row=7, column=0, padx=24, pady=(24, 8), sticky="w")
 
-        ctk.CTkLabel(sidebar, text="Art", text_color="#AAB2C0").grid(row=7, column=0, padx=24, pady=(2, 2), sticky="w")
+        ctk.CTkLabel(sidebar, text="Art", text_color="#AAB2C0").grid(row=8, column=0, padx=24, pady=(2, 2), sticky="w")
         self.filter_dropdown = ctk.CTkOptionMenu(sidebar, values=ART_OPTIONS, variable=self.filter_var, command=lambda _: self.refresh_views())
-        self.filter_dropdown.grid(row=8, column=0, padx=22, pady=(0, 8), sticky="ew")
+        self.filter_dropdown.grid(row=9, column=0, padx=22, pady=(0, 8), sticky="ew")
 
-        ctk.CTkLabel(sidebar, text="Jahr", text_color="#AAB2C0").grid(row=9, column=0, padx=24, pady=(2, 2), sticky="w")
-        self.year_dropdown = ctk.CTkOptionMenu(sidebar, values=["Alle"], variable=self.year_filter_var, command=lambda _: self.refresh_views())
-        self.year_dropdown.grid(row=10, column=0, padx=22, pady=(0, 8), sticky="ew")
-
-        ctk.CTkLabel(sidebar, text="Monat", text_color="#AAB2C0").grid(row=11, column=0, padx=24, pady=(2, 2), sticky="w")
+        ctk.CTkLabel(sidebar, text="Monat", text_color="#AAB2C0").grid(row=10, column=0, padx=24, pady=(2, 2), sticky="w")
         self.month_dropdown = ctk.CTkOptionMenu(sidebar, values=["Alle"], variable=self.month_filter_var, command=lambda _: self.refresh_views())
-        self.month_dropdown.grid(row=12, column=0, padx=22, pady=(0, 8), sticky="ew")
+        self.month_dropdown.grid(row=11, column=0, padx=22, pady=(0, 8), sticky="ew")
 
-        ctk.CTkLabel(sidebar, text="Zug / Einheit", text_color="#AAB2C0").grid(row=13, column=0, padx=24, pady=(2, 2), sticky="w")
+        ctk.CTkLabel(sidebar, text="Zug / Einheit", text_color="#AAB2C0").grid(row=12, column=0, padx=24, pady=(2, 2), sticky="w")
         self.unit_dropdown = ctk.CTkOptionMenu(sidebar, values=["Alle"], variable=self.unit_filter_var, command=lambda _: self.refresh_views())
-        self.unit_dropdown.grid(row=14, column=0, padx=22, pady=(0, 8), sticky="ew")
+        self.unit_dropdown.grid(row=13, column=0, padx=22, pady=(0, 8), sticky="ew")
 
-        ctk.CTkButton(sidebar, text="Filter zurücksetzen", command=self.reset_filters, height=36, fg_color="#3A3F47", hover_color="#4A505A").grid(row=15, column=0, padx=22, pady=(6, 14), sticky="ew")
+        ctk.CTkButton(sidebar, text="Filter zurücksetzen", command=self.reset_filters, height=36, fg_color="#3A3F47", hover_color="#4A505A").grid(row=14, column=0, padx=22, pady=(6, 14), sticky="ew")
 
-        ctk.CTkLabel(sidebar, text="Darstellung", text_color="#AAB2C0").grid(row=16, column=0, padx=24, pady=(4, 2), sticky="w")
+        ctk.CTkLabel(sidebar, text="Darstellung", text_color="#AAB2C0").grid(row=15, column=0, padx=24, pady=(4, 2), sticky="w")
         self.theme_switch = ctk.CTkSegmentedButton(sidebar, values=["Dark", "Light"], variable=self.theme_var, command=self.change_theme)
-        self.theme_switch.grid(row=17, column=0, padx=22, pady=(0, 8), sticky="ew")
+        self.theme_switch.grid(row=16, column=0, padx=22, pady=(0, 8), sticky="ew")
 
         self.source_label = ctk.CTkLabel(sidebar, text=self.source_name, text_color="#AAB2C0", wraplength=230, justify="left")
         self.source_label.grid(row=18, column=0, padx=24, pady=(14, 28), sticky="sw")
@@ -1393,8 +1568,6 @@ class RktApp(ctk.CTk):
 
     def reset_filters(self):
         self.filter_var.set("RKT-FRW")
-        self.year_filter_var.set("Alle")
-        self.year_filter_var.set("Alle")
         self.month_filter_var.set("Alle")
         self.unit_filter_var.set("Alle")
         self.refresh_views()
@@ -1439,47 +1612,16 @@ class RktApp(ctk.CTk):
         try:
             raw = read_input_file(file)
             df = normalize_dataframe(raw)
-            self.import_data(df, os.path.basename(file))
+            self.set_data(df, os.path.basename(file))
             self.set_status(f"Datei geladen: {os.path.basename(file)}")
         except Exception as e:
             messagebox.showerror("Fehler beim Dateiimport", str(e))
 
     def open_paste_dialog(self):
-        PasteDialog(self, self.import_data)
+        PasteDialog(self, self.set_data)
 
-    def import_data(self, df: pd.DataFrame, source_name: str):
-        """Importiert neue Daten und fragt bei vorhandenen Daten nach Ersetzen/Erweitern."""
-        df = df.copy()
-        df["Std."] = df["Std."].apply(clean_hours)
-
-        if self.df_all.empty:
-            self.set_data(df, source_name)
-            return
-
-        dialog_text = (
-            "Es sind bereits Daten geladen.\n\n"
-            "Ja = bestehende Daten erweitern und Dubletten überspringen\n"
-            "Nein = bestehende Daten löschen und durch neuen Import ersetzen\n"
-            "Abbrechen = nichts importieren"
-        )
-
-        choice = messagebox.askyesnocancel("Daten importieren", dialog_text)
-
-        if choice is None:
-            self.set_status("Import abgebrochen")
-            return
-
-        if choice is False:
-            self.set_data(df, source_name)
-            return
-
-        merged, added, skipped = merge_without_duplicates(self.df_all, df)
-        self.set_data(merged, f"{self.source_name.splitlines()[1] if 'Quelle:' in self.source_name else 'Bestehende Daten'} + {source_name}")
-        self.set_status(f"Import erweitert: {added} neu, {skipped} doppelt übersprungen")
-        messagebox.showinfo(
-            "Import erweitert",
-            f"Neue Einträge: {added}\nDoppelte übersprungen: {skipped}\nGesamt: {len(merged)}"
-        )
+    def open_portal_import_dialog(self):
+        PortalImportDialog(self, self.set_data)
 
     def set_data(self, df: pd.DataFrame, source_name: str):
         self.df_all = df.copy()
@@ -1500,7 +1642,6 @@ class RktApp(ctk.CTk):
         self.df_all = pd.DataFrame(columns=["#", "Datum", "Art", "Einheit", "Beschreibung", "Std.", "*"])
         self.source_name = "Keine Daten geladen"
         self.source_label.configure(text=self.source_name)
-        self.year_filter_var.set("Alle")
         self.month_filter_var.set("Alle")
         self.unit_filter_var.set("Alle")
         self.update_filter_options()
@@ -1508,46 +1649,22 @@ class RktApp(ctk.CTk):
         self.autosave_data()
         self.set_status("Daten gelöscht")
 
-    def get_month_options_for_year(self, selected_year):
-        if self.df_all.empty:
-            return ["Alle"]
-
-        tmp = self.df_all.copy()
-        tmp["_date"] = pd.to_datetime(tmp["Datum"], dayfirst=True, errors="coerce")
-        tmp = tmp.dropna(subset=["_date"])
-
-        if selected_year and selected_year != "Alle":
-            tmp = tmp[tmp["_date"].dt.strftime("%Y") == selected_year]
-
-        month_keys = sorted(tmp["_date"].dt.strftime("%m").unique().tolist())
-        return ["Alle"] + month_keys
-
     def update_filter_options(self):
         if self.df_all.empty:
-            years = ["Alle"]
+            months = ["Alle"]
             units = ["Alle"]
         else:
             tmp = self.df_all.copy()
             tmp["_date"] = pd.to_datetime(tmp["Datum"], dayfirst=True, errors="coerce")
-            valid_dates = tmp.dropna(subset=["_date"])
-
-            year_keys = sorted(valid_dates["_date"].dt.strftime("%Y").unique().tolist())
-            years = ["Alle"] + year_keys
+            month_keys = sorted(tmp.dropna(subset=["_date"])["_date"].dt.strftime("%Y-%m").unique().tolist())
+            months = ["Alle"] + [format_month_display(m) for m in month_keys]
 
             units_raw = sorted([u for u in self.df_all["Einheit"].dropna().astype(str).unique().tolist() if u.strip()])
             units = ["Alle"] + units_raw
 
-        current_year = self.year_filter_var.get()
         current_month = self.month_filter_var.get()
         current_unit = self.unit_filter_var.get()
 
-        if current_year not in years:
-            self.year_filter_var.set("Alle")
-            current_year = "Alle"
-
-        months = self.get_month_options_for_year(current_year)
-
-        self.year_dropdown.configure(values=years)
         self.month_dropdown.configure(values=months)
         self.unit_dropdown.configure(values=units)
 
@@ -1559,20 +1676,15 @@ class RktApp(ctk.CTk):
     def get_filtered_df(self):
         df = self.df_all.copy()
         selected_art = self.filter_var.get()
-        selected_year = self.year_filter_var.get()
         selected_month = self.month_filter_var.get()
         selected_unit = self.unit_filter_var.get()
 
         if selected_art and selected_art != "Alle" and not df.empty:
             df = df[df["Art"].astype(str).str.contains(selected_art, case=False, na=False)]
 
-        if selected_year and selected_year != "Alle" and not df.empty:
-            tmp_dates = pd.to_datetime(df["Datum"], dayfirst=True, errors="coerce")
-            df = df[tmp_dates.dt.strftime("%Y") == selected_year]
-
         if selected_month and selected_month != "Alle" and not df.empty:
             tmp_dates = pd.to_datetime(df["Datum"], dayfirst=True, errors="coerce")
-            df = df[tmp_dates.dt.strftime("%m") == selected_month]
+            df = df[tmp_dates.dt.strftime("%Y-%m") == month_key_from_display(selected_month)]
 
         if selected_unit and selected_unit != "Alle" and not df.empty:
             df = df[df["Einheit"].astype(str) == selected_unit]
@@ -1606,7 +1718,6 @@ class RktApp(ctk.CTk):
             "ERGEBNIS",
             "=" * 60,
             f"Filter Art: {self.filter_var.get()}",
-            f"Filter Jahr: {self.year_filter_var.get()}",
             f"Filter Monat: {self.month_filter_var.get()}",
             f"Filter Einheit: {self.unit_filter_var.get()}",
             "",
@@ -1857,11 +1968,11 @@ class RktApp(ctk.CTk):
         for spine in ax.spines.values():
             spine.set_color(bg)
 
-        if require_single_month and (self.year_filter_var.get() == "Alle" or self.month_filter_var.get() == "Alle"):
+        if require_single_month and self.month_filter_var.get() == "Alle":
             ax.text(
                 0.5,
                 0.5,
-                "Bitte zuerst links Jahr und Monat auswählen",
+                "Bitte zuerst links einen Monat auswählen",
                 ha="center",
                 va="center",
                 color=fg,

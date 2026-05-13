@@ -7,11 +7,6 @@ import os
 import sys
 import json
 import urllib.request
-import ssl
-try:
-    import certifi
-except Exception:
-    certifi = None
 import zipfile
 import tempfile
 import shutil
@@ -77,32 +72,6 @@ APP_BUNDLE_ID = VERSION_INFO.get("bundle_id", "at.rk.dienstlog")
 APP_UPDATE_URL = VERSION_INFO.get("update_url", "")
 
 CHANGELOG_TEXT = """RK DienstLog – Changelog
-
-Version 2.9.2
-- Dubletten-Erkennung beim erweiterten Import verbessert.
-- Monatsfilter bleibt abhängig vom gewählten Jahr optimiert.
-- Save & Load bleibt als nächster sauberer Umsetzungsschritt vorgemerkt.
-
-Version 2.9.1
-- Dubletten-Erkennung beim erweiterten Import verbessert.
-- Doppelte Einträge werden nun robuster über Datum, Art, Einheit und Stunden erkannt.
-- Monatsfilter zeigt bei ausgewähltem Jahr nur Monate mit vorhandenen Diensten an.
-
-Version 2.8.12
-- Portal-Import vorerst wieder entfernt.
-- Jahresfilter ergänzt.
-- Monatsfilter und Jahresfilter getrennt nutzbar gemacht.
-- Import kann bestehende Daten nun ersetzen oder erweitern.
-- Beim Erweitern werden doppelte Einträge erkannt und übersprungen.
-
-Version 2.8.8
-- Kleine sichtbare Textänderung zum Test des Windows Auto-Updates.
-- Untertitel auf „Dienststunden, Auswertung & Update-Test“ geändert.
-
-Version 2.8.7
-- Kleine sichtbare Textänderung zum Test des Windows Auto-Updates.
-- Untertitel auf „Dienststunden, Auswertung & Updates“ geändert.
-- Build-Automatisierung für macOS und Windows vorbereitet.
 
 Version 2.8.6
 - Windows Auto-Update ergänzt.
@@ -272,75 +241,6 @@ def clean_unit_display(value) -> str:
     return text
 
 
-def prepare_duplicate_key(row) -> tuple:
-    """Robuster Schlüssel zur Erkennung doppelter Einträge.
-
-    Beschreibung wird berücksichtigt, damit legitime gleiche Dienste am
-    gleichen Tag nicht fälschlich als doppelt erkannt werden.
-    """
-    date_value = clean_text(row.get("Datum", ""))
-    try:
-        dt = pd.to_datetime(date_value, dayfirst=True, errors="coerce")
-        if not pd.isna(dt):
-            date_value = dt.strftime("%Y-%m-%d")
-    except Exception:
-        pass
-
-    def norm(value):
-        value = clean_text(value).lower().strip()
-        value = re.sub(r"\\s+", " ", value)
-        value = value.replace("–", "-").replace("—", "-")
-        return value
-
-    art = norm(row.get("Art", ""))
-    unit = norm(clean_unit_display(row.get("Einheit", "")))
-    desc = norm(row.get("Beschreibung", ""))
-    hours = round(float(clean_hours(row.get("Std.", 0))), 2)
-
-    return (date_value, art, unit, desc, hours)
-
-def merge_without_duplicates(existing_df: pd.DataFrame, new_df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
-    """Hängt neue Daten an bestehende an und überspringt Dubletten."""
-    if existing_df.empty:
-        return new_df.copy(), len(new_df), 0
-
-    existing = existing_df.copy()
-    new = new_df.copy()
-
-    existing_keys = set(existing.apply(prepare_duplicate_key, axis=1).tolist())
-
-    rows_to_add = []
-    skipped = 0
-
-    for _, row in new.iterrows():
-        key = prepare_duplicate_key(row)
-        if key in existing_keys:
-            skipped += 1
-            continue
-
-        existing_keys.add(key)
-        rows_to_add.append(row)
-
-    if rows_to_add:
-        add_df = pd.DataFrame(rows_to_add, columns=new.columns)
-        merged = pd.concat([existing, add_df], ignore_index=True)
-    else:
-        merged = existing
-
-    # Sicherheit: auch bereits entstandene Dubletten nach gleichem Schlüssel entfernen
-    before_final = len(merged)
-    merged["_dup_key"] = merged.apply(prepare_duplicate_key, axis=1)
-    merged = merged.drop_duplicates(subset=["_dup_key"], keep="first").drop(columns=["_dup_key"])
-    skipped += before_final - len(merged)
-
-    # Nummerierung neu setzen, damit # sauber bleibt
-    if "#" in merged.columns:
-        merged["#"] = range(1, len(merged) + 1)
-
-    return merged.reset_index(drop=True), len(rows_to_add), skipped
-
-
-
 def read_input_file(path: str) -> pd.DataFrame:
     ext = Path(path).suffix.lower()
 
@@ -495,41 +395,6 @@ def get_current_app_bundle() -> Path | None:
     except Exception:
         return None
 
-
-
-def get_ssl_context():
-    """Robuster SSL-Kontext für Windows/PyInstaller/GitHub Downloads."""
-    try:
-        if certifi is not None:
-            return ssl.create_default_context(cafile=certifi.where())
-    except Exception:
-        pass
-
-    try:
-        return ssl.create_default_context()
-    except Exception:
-        return None
-
-
-def download_file_secure(url: str, target_path: Path):
-    """Lädt Dateien mit explizitem Zertifikats-Kontext herunter."""
-    context = get_ssl_context()
-
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": f"{APP_TITLE}/{APP_VERSION}"
-        }
-    )
-
-    if context is not None:
-        response = urllib.request.urlopen(request, context=context, timeout=60)
-    else:
-        response = urllib.request.urlopen(request, timeout=60)
-
-    with response:
-        with open(target_path, "wb") as f:
-            shutil.copyfileobj(response, f)
 
 class PasteDialog(ctk.CTkToplevel):
     def __init__(self, parent, callback):
@@ -947,7 +812,6 @@ class RktApp(ctk.CTk):
 
         self.df_all = pd.DataFrame(columns=["#", "Datum", "Art", "Einheit", "Beschreibung", "Std.", "*"])
         self.filter_var = ctk.StringVar(value=self.settings.get("filter_art", "RKT-FRW"))
-        self.year_filter_var = ctk.StringVar(value=self.settings.get("filter_year", "Alle"))
         self.month_filter_var = ctk.StringVar(value=self.settings.get("filter_month", "Alle"))
         self.unit_filter_var = ctk.StringVar(value=self.settings.get("filter_unit", "Alle"))
         self.theme_var = ctk.StringVar(value=initial_theme)
@@ -981,7 +845,6 @@ class RktApp(ctk.CTk):
         settings = {
             "theme": self.theme_var.get(),
             "filter_art": self.filter_var.get(),
-            "filter_year": self.year_filter_var.get(),
             "filter_month": self.month_filter_var.get(),
             "filter_unit": self.unit_filter_var.get(),
             "chart_mode": self.current_chart_mode,
@@ -1048,26 +911,22 @@ class RktApp(ctk.CTk):
         self.filter_dropdown = ctk.CTkOptionMenu(sidebar, values=ART_OPTIONS, variable=self.filter_var, command=lambda _: self.refresh_views())
         self.filter_dropdown.grid(row=8, column=0, padx=22, pady=(0, 8), sticky="ew")
 
-        ctk.CTkLabel(sidebar, text="Jahr", text_color="#AAB2C0").grid(row=9, column=0, padx=24, pady=(2, 2), sticky="w")
-        self.year_dropdown = ctk.CTkOptionMenu(sidebar, values=["Alle"], variable=self.year_filter_var, command=lambda _: self.refresh_views())
-        self.year_dropdown.grid(row=10, column=0, padx=22, pady=(0, 8), sticky="ew")
-
-        ctk.CTkLabel(sidebar, text="Monat", text_color="#AAB2C0").grid(row=11, column=0, padx=24, pady=(2, 2), sticky="w")
+        ctk.CTkLabel(sidebar, text="Monat", text_color="#AAB2C0").grid(row=9, column=0, padx=24, pady=(2, 2), sticky="w")
         self.month_dropdown = ctk.CTkOptionMenu(sidebar, values=["Alle"], variable=self.month_filter_var, command=lambda _: self.refresh_views())
-        self.month_dropdown.grid(row=12, column=0, padx=22, pady=(0, 8), sticky="ew")
+        self.month_dropdown.grid(row=10, column=0, padx=22, pady=(0, 8), sticky="ew")
 
-        ctk.CTkLabel(sidebar, text="Zug / Einheit", text_color="#AAB2C0").grid(row=13, column=0, padx=24, pady=(2, 2), sticky="w")
+        ctk.CTkLabel(sidebar, text="Zug / Einheit", text_color="#AAB2C0").grid(row=11, column=0, padx=24, pady=(2, 2), sticky="w")
         self.unit_dropdown = ctk.CTkOptionMenu(sidebar, values=["Alle"], variable=self.unit_filter_var, command=lambda _: self.refresh_views())
-        self.unit_dropdown.grid(row=14, column=0, padx=22, pady=(0, 8), sticky="ew")
+        self.unit_dropdown.grid(row=12, column=0, padx=22, pady=(0, 8), sticky="ew")
 
-        ctk.CTkButton(sidebar, text="Filter zurücksetzen", command=self.reset_filters, height=36, fg_color="#3A3F47", hover_color="#4A505A").grid(row=15, column=0, padx=22, pady=(6, 14), sticky="ew")
+        ctk.CTkButton(sidebar, text="Filter zurücksetzen", command=self.reset_filters, height=36, fg_color="#3A3F47", hover_color="#4A505A").grid(row=13, column=0, padx=22, pady=(6, 14), sticky="ew")
 
-        ctk.CTkLabel(sidebar, text="Darstellung", text_color="#AAB2C0").grid(row=16, column=0, padx=24, pady=(4, 2), sticky="w")
+        ctk.CTkLabel(sidebar, text="Darstellung", text_color="#AAB2C0").grid(row=14, column=0, padx=24, pady=(4, 2), sticky="w")
         self.theme_switch = ctk.CTkSegmentedButton(sidebar, values=["Dark", "Light"], variable=self.theme_var, command=self.change_theme)
-        self.theme_switch.grid(row=17, column=0, padx=22, pady=(0, 8), sticky="ew")
+        self.theme_switch.grid(row=15, column=0, padx=22, pady=(0, 8), sticky="ew")
 
         self.source_label = ctk.CTkLabel(sidebar, text=self.source_name, text_color="#AAB2C0", wraplength=230, justify="left")
-        self.source_label.grid(row=18, column=0, padx=24, pady=(14, 28), sticky="sw")
+        self.source_label.grid(row=17, column=0, padx=24, pady=(14, 28), sticky="sw")
 
         main = ctk.CTkFrame(self, fg_color="transparent")
         main.grid(row=0, column=1, sticky="nsew", padx=24, pady=24)
@@ -1393,8 +1252,6 @@ class RktApp(ctk.CTk):
 
     def reset_filters(self):
         self.filter_var.set("RKT-FRW")
-        self.year_filter_var.set("Alle")
-        self.year_filter_var.set("Alle")
         self.month_filter_var.set("Alle")
         self.unit_filter_var.set("Alle")
         self.refresh_views()
@@ -1439,47 +1296,13 @@ class RktApp(ctk.CTk):
         try:
             raw = read_input_file(file)
             df = normalize_dataframe(raw)
-            self.import_data(df, os.path.basename(file))
+            self.set_data(df, os.path.basename(file))
             self.set_status(f"Datei geladen: {os.path.basename(file)}")
         except Exception as e:
             messagebox.showerror("Fehler beim Dateiimport", str(e))
 
     def open_paste_dialog(self):
-        PasteDialog(self, self.import_data)
-
-    def import_data(self, df: pd.DataFrame, source_name: str):
-        """Importiert neue Daten und fragt bei vorhandenen Daten nach Ersetzen/Erweitern."""
-        df = df.copy()
-        df["Std."] = df["Std."].apply(clean_hours)
-
-        if self.df_all.empty:
-            self.set_data(df, source_name)
-            return
-
-        dialog_text = (
-            "Es sind bereits Daten geladen.\n\n"
-            "Ja = bestehende Daten erweitern und Dubletten überspringen\n"
-            "Nein = bestehende Daten löschen und durch neuen Import ersetzen\n"
-            "Abbrechen = nichts importieren"
-        )
-
-        choice = messagebox.askyesnocancel("Daten importieren", dialog_text)
-
-        if choice is None:
-            self.set_status("Import abgebrochen")
-            return
-
-        if choice is False:
-            self.set_data(df, source_name)
-            return
-
-        merged, added, skipped = merge_without_duplicates(self.df_all, df)
-        self.set_data(merged, f"{self.source_name.splitlines()[1] if 'Quelle:' in self.source_name else 'Bestehende Daten'} + {source_name}")
-        self.set_status(f"Import erweitert: {added} neu, {skipped} doppelt übersprungen")
-        messagebox.showinfo(
-            "Import erweitert",
-            f"Neue Einträge: {added}\nDoppelte übersprungen: {skipped}\nGesamt: {len(merged)}"
-        )
+        PasteDialog(self, self.set_data)
 
     def set_data(self, df: pd.DataFrame, source_name: str):
         self.df_all = df.copy()
@@ -1500,7 +1323,6 @@ class RktApp(ctk.CTk):
         self.df_all = pd.DataFrame(columns=["#", "Datum", "Art", "Einheit", "Beschreibung", "Std.", "*"])
         self.source_name = "Keine Daten geladen"
         self.source_label.configure(text=self.source_name)
-        self.year_filter_var.set("Alle")
         self.month_filter_var.set("Alle")
         self.unit_filter_var.set("Alle")
         self.update_filter_options()
@@ -1508,46 +1330,22 @@ class RktApp(ctk.CTk):
         self.autosave_data()
         self.set_status("Daten gelöscht")
 
-    def get_month_options_for_year(self, selected_year):
-        if self.df_all.empty:
-            return ["Alle"]
-
-        tmp = self.df_all.copy()
-        tmp["_date"] = pd.to_datetime(tmp["Datum"], dayfirst=True, errors="coerce")
-        tmp = tmp.dropna(subset=["_date"])
-
-        if selected_year and selected_year != "Alle":
-            tmp = tmp[tmp["_date"].dt.strftime("%Y") == selected_year]
-
-        month_keys = sorted(tmp["_date"].dt.strftime("%m").unique().tolist())
-        return ["Alle"] + month_keys
-
     def update_filter_options(self):
         if self.df_all.empty:
-            years = ["Alle"]
+            months = ["Alle"]
             units = ["Alle"]
         else:
             tmp = self.df_all.copy()
             tmp["_date"] = pd.to_datetime(tmp["Datum"], dayfirst=True, errors="coerce")
-            valid_dates = tmp.dropna(subset=["_date"])
-
-            year_keys = sorted(valid_dates["_date"].dt.strftime("%Y").unique().tolist())
-            years = ["Alle"] + year_keys
+            month_keys = sorted(tmp.dropna(subset=["_date"])["_date"].dt.strftime("%Y-%m").unique().tolist())
+            months = ["Alle"] + [format_month_display(m) for m in month_keys]
 
             units_raw = sorted([u for u in self.df_all["Einheit"].dropna().astype(str).unique().tolist() if u.strip()])
             units = ["Alle"] + units_raw
 
-        current_year = self.year_filter_var.get()
         current_month = self.month_filter_var.get()
         current_unit = self.unit_filter_var.get()
 
-        if current_year not in years:
-            self.year_filter_var.set("Alle")
-            current_year = "Alle"
-
-        months = self.get_month_options_for_year(current_year)
-
-        self.year_dropdown.configure(values=years)
         self.month_dropdown.configure(values=months)
         self.unit_dropdown.configure(values=units)
 
@@ -1559,20 +1357,15 @@ class RktApp(ctk.CTk):
     def get_filtered_df(self):
         df = self.df_all.copy()
         selected_art = self.filter_var.get()
-        selected_year = self.year_filter_var.get()
         selected_month = self.month_filter_var.get()
         selected_unit = self.unit_filter_var.get()
 
         if selected_art and selected_art != "Alle" and not df.empty:
             df = df[df["Art"].astype(str).str.contains(selected_art, case=False, na=False)]
 
-        if selected_year and selected_year != "Alle" and not df.empty:
-            tmp_dates = pd.to_datetime(df["Datum"], dayfirst=True, errors="coerce")
-            df = df[tmp_dates.dt.strftime("%Y") == selected_year]
-
         if selected_month and selected_month != "Alle" and not df.empty:
             tmp_dates = pd.to_datetime(df["Datum"], dayfirst=True, errors="coerce")
-            df = df[tmp_dates.dt.strftime("%m") == selected_month]
+            df = df[tmp_dates.dt.strftime("%Y-%m") == month_key_from_display(selected_month)]
 
         if selected_unit and selected_unit != "Alle" and not df.empty:
             df = df[df["Einheit"].astype(str) == selected_unit]
@@ -1606,7 +1399,6 @@ class RktApp(ctk.CTk):
             "ERGEBNIS",
             "=" * 60,
             f"Filter Art: {self.filter_var.get()}",
-            f"Filter Jahr: {self.year_filter_var.get()}",
             f"Filter Monat: {self.month_filter_var.get()}",
             f"Filter Einheit: {self.unit_filter_var.get()}",
             "",
@@ -1857,11 +1649,11 @@ class RktApp(ctk.CTk):
         for spine in ax.spines.values():
             spine.set_color(bg)
 
-        if require_single_month and (self.year_filter_var.get() == "Alle" or self.month_filter_var.get() == "Alle"):
+        if require_single_month and self.month_filter_var.get() == "Alle":
             ax.text(
                 0.5,
                 0.5,
-                "Bitte zuerst links Jahr und Monat auswählen",
+                "Bitte zuerst links einen Monat auswählen",
                 ha="center",
                 va="center",
                 color=fg,
@@ -1981,18 +1773,7 @@ class RktApp(ctk.CTk):
 
         def worker():
             try:
-                context = get_ssl_context()
-                request = urllib.request.Request(
-                    APP_UPDATE_URL,
-                    headers={"User-Agent": f"{APP_TITLE}/{APP_VERSION}"}
-                )
-
-                if context is not None:
-                    response = urllib.request.urlopen(request, context=context, timeout=12)
-                else:
-                    response = urllib.request.urlopen(request, timeout=12)
-
-                with response:
+                with urllib.request.urlopen(APP_UPDATE_URL, timeout=12) as response:
                     raw = response.read().decode("utf-8")
                     update_info = json.loads(raw)
 
@@ -2063,7 +1844,7 @@ class RktApp(ctk.CTk):
                 update_dir.mkdir(exist_ok=True)
 
                 installer_path = update_dir / f"RK_DienstLog_Setup_{online_version}.exe"
-                download_file_secure(installer_url, installer_path)
+                urllib.request.urlretrieve(installer_url, installer_path)
 
                 self.after(0, lambda: self.finish_windows_update(installer_path, online_version))
             except Exception as e:
@@ -2138,7 +1919,7 @@ class RktApp(ctk.CTk):
                     shutil.rmtree(extract_dir)
                 extract_dir.mkdir(parents=True, exist_ok=True)
 
-                download_file_secure(zip_url, zip_path)
+                urllib.request.urlretrieve(zip_url, zip_path)
 
                 # Wichtig auf macOS:
                 # Python zipfile zerstört bei .app Bundles teils Symlinks/Frameworks.

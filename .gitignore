@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# PyInstaller output
+build/
+dist/
+dist_installer/
+
+# macOS
+.DS_Store
+*.dmg
+dmg_build/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Claude Code internal
+.claude/

@@ -1,0 +1,109 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install \
+            customtkinter pandas matplotlib pyinstaller pillow \
+            pyobjc-framework-Cocoa pyobjc-framework-AppKit \
+            certifi openpyxl
+
+      - name: Build app bundle
+        run: pyinstaller "RK DienstLog.spec"
+
+      - name: Create ZIP
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "dist/RK DienstLog.app" \
+            "RK_DienstLog_${VERSION}_mac.zip"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-zip
+          path: "RK_DienstLog_*_mac.zip"
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: pip install customtkinter pandas matplotlib pyinstaller pillow certifi openpyxl
+
+      - name: Generate Windows icon from PNG
+        run: python -c "from PIL import Image; Image.open('rk_dienstlog_icon.png').save('rk_dienstlog_windows_fixed.ico')"
+
+      - name: Build exe with PyInstaller
+        run: >
+          pyinstaller
+          --name "RK DienstLog"
+          --onefile
+          --windowed
+          --icon rk_dienstlog_windows_fixed.ico
+          --add-data "version.json;."
+          --add-data "rk_dienstlog_icon.png;."
+          --add-data "rk_dienstlog_windows_fixed.ico;."
+          rk_dienstlog.py
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          $VERSION = "${{ github.ref_name }}".TrimStart('v')
+          New-Item -ItemType Directory -Force -Path dist_installer | Out-Null
+          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" /DMyAppVersion=$VERSION rk_dienstlog_setup.iss
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist_installer\*.exe
+
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-zip
+          path: artifacts/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: artifacts/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            --title "RK DienstLog v${VERSION}" \
+            --generate-notes \
+            artifacts/*

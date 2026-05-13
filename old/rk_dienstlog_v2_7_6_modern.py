@@ -6,17 +6,6 @@ import re
 import os
 import sys
 import json
-import urllib.request
-import ssl
-try:
-    import certifi
-except Exception:
-    certifi = None
-import zipfile
-import tempfile
-import shutil
-import subprocess
-import threading
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -39,6 +28,27 @@ except Exception:
     NSApplication = None
     NSImage = None
 
+def load_version_info():
+    try:
+        version_file = Path(__file__).resolve().parent / "version.json"
+        if not version_file.exists():
+            version_file = Path(resource_path("version.json"))
+
+        with open(version_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {
+            "version": "0.0.0",
+            "app_name": "RK DienstLog",
+            "bundle_id": "at.rk.dienstlog"
+        }
+
+VERSION_INFO = load_version_info()
+
+APP_TITLE = VERSION_INFO.get("app_name", "RK DienstLog")
+APP_SUBTITLE = "Dienststunden & Auswertung"
+APP_VERSION = VERSION_INFO.get("version", "0.0.0")
+APP_BUNDLE_ID = VERSION_INFO.get("bundle_id", "at.rk.dienstlog")
 
 def resource_path(relative_path: str) -> str:
     """Pfad für normale Ausführung und PyInstaller-App."""
@@ -51,93 +61,7 @@ def resource_path(relative_path: str) -> str:
             base_path = Path.cwd()
     return str(base_path / relative_path)
 
-def load_version_info():
-    try:
-        version_file = Path(resource_path("version.json"))
-        if version_file.exists():
-            with open(version_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
-
-    return {
-        "version": "0.0.0",
-        "app_name": "RK DienstLog",
-        "bundle_id": "at.rk.dienstlog",
-        "update_url": ""
-    }
-
-
-VERSION_INFO = load_version_info()
-
-APP_TITLE = VERSION_INFO.get("app_name", "RK DienstLog")
-APP_SUBTITLE = "Dienststunden & Auswertung"
-APP_VERSION = VERSION_INFO.get("version", "0.0.0")
-APP_BUNDLE_ID = VERSION_INFO.get("bundle_id", "at.rk.dienstlog")
-APP_UPDATE_URL = VERSION_INFO.get("update_url", "")
-
-CHANGELOG_TEXT = """RK DienstLog – Changelog
-
-Version 2.9.2
-- Dubletten-Erkennung beim erweiterten Import verbessert.
-- Monatsfilter bleibt abhängig vom gewählten Jahr optimiert.
-- Save & Load bleibt als nächster sauberer Umsetzungsschritt vorgemerkt.
-
-Version 2.9.1
-- Dubletten-Erkennung beim erweiterten Import verbessert.
-- Doppelte Einträge werden nun robuster über Datum, Art, Einheit und Stunden erkannt.
-- Monatsfilter zeigt bei ausgewähltem Jahr nur Monate mit vorhandenen Diensten an.
-
-Version 2.8.12
-- Portal-Import vorerst wieder entfernt.
-- Jahresfilter ergänzt.
-- Monatsfilter und Jahresfilter getrennt nutzbar gemacht.
-- Import kann bestehende Daten nun ersetzen oder erweitern.
-- Beim Erweitern werden doppelte Einträge erkannt und übersprungen.
-
-Version 2.8.8
-- Kleine sichtbare Textänderung zum Test des Windows Auto-Updates.
-- Untertitel auf „Dienststunden, Auswertung & Update-Test“ geändert.
-
-Version 2.8.7
-- Kleine sichtbare Textänderung zum Test des Windows Auto-Updates.
-- Untertitel auf „Dienststunden, Auswertung & Updates“ geändert.
-- Build-Automatisierung für macOS und Windows vorbereitet.
-
-Version 2.8.6
-- Windows Auto-Update ergänzt.
-- Windows lädt künftig den aktuellen Installer herunter und startet ihn automatisch.
-- Update-Logik unterscheidet nun zwischen macOS ZIP-Update und Windows Installer-Update.
-
-Version 2.8.5
-- Auto-Update finalisiert und macOS-App-Bundle-Handling stabilisiert.
-- Update-Entpacken erfolgt mit macOS ditto statt Python zipfile.
-- Update-Installation nutzt Staging, Backup und Restore bei Fehlern.
-- Rechte, Quarantine-Attribute und App-Start werden nach dem Update korrigiert.
-
-Version 2.8.4
-- Auto-Update-Entpacken auf macOS ditto umgestellt.
-- Fix für beschädigte Python-Framework-Datei nach Update.
-- macOS-App-Bundle-Struktur wird beim Update nun korrekt erhalten.
-
-Version 2.8.3
-- Auto-Update robuster gemacht.
-- Backup/Restore-Mechanismus beim Aktualisieren ergänzt.
-- Rechte und Quarantine-Attribute werden nach dem Update korrigiert.
-
-Version 2.8.2
-- Update-Script-Fix vorbereitet.
-
-Version 2.8.1
-- Menüpunkt „Hilfe → Changelog“ ergänzt.
-
-Version 2.8.0
-- Auto-Update für macOS ergänzt.
-"""
-
-
 APP_ICON_PNG = resource_path("rk_dienstlog_icon.png")
-APP_ICON_ICO = resource_path("rk_dienstlog_windows_fixed.ico")
 
 def set_macos_dock_icon():
     """Setzt Dock/App-Switcher Icon zur Laufzeit auf macOS."""
@@ -156,26 +80,6 @@ def enforce_macos_icon(root=None):
     """Setzt das Icon nur einmal. Kein permanentes Nachsetzen, damit macOS nicht flackert."""
     set_macos_dock_icon()
 
-
-
-def set_window_icon(root):
-    """Setzt das Fenster-/Taskleistenicon plattformübergreifend."""
-    try:
-        # Windows: .ico ist für Taskleiste/Fenster am zuverlässigsten
-        if os.name == "nt" and Path(APP_ICON_ICO).exists():
-            root.iconbitmap(APP_ICON_ICO)
-            return
-    except Exception:
-        pass
-
-    try:
-        # macOS/Linux fallback
-        if Path(APP_ICON_PNG).exists():
-            img = tk.PhotoImage(file=APP_ICON_PNG)
-            root.iconphoto(True, img)
-            root._window_icon_ref = img
-    except Exception:
-        pass
 
 APP_DIR = Path.home() / ".rk_dienstlog"
 APP_DIR.mkdir(exist_ok=True)
@@ -270,75 +174,6 @@ def clean_unit_display(value) -> str:
     text = clean_text(value)
     text = re.sub(r"\s*\(Abteilung[^)]*\)", "", text).strip()
     return text
-
-
-def prepare_duplicate_key(row) -> tuple:
-    """Robuster Schlüssel zur Erkennung doppelter Einträge.
-
-    Beschreibung wird berücksichtigt, damit legitime gleiche Dienste am
-    gleichen Tag nicht fälschlich als doppelt erkannt werden.
-    """
-    date_value = clean_text(row.get("Datum", ""))
-    try:
-        dt = pd.to_datetime(date_value, dayfirst=True, errors="coerce")
-        if not pd.isna(dt):
-            date_value = dt.strftime("%Y-%m-%d")
-    except Exception:
-        pass
-
-    def norm(value):
-        value = clean_text(value).lower().strip()
-        value = re.sub(r"\\s+", " ", value)
-        value = value.replace("–", "-").replace("—", "-")
-        return value
-
-    art = norm(row.get("Art", ""))
-    unit = norm(clean_unit_display(row.get("Einheit", "")))
-    desc = norm(row.get("Beschreibung", ""))
-    hours = round(float(clean_hours(row.get("Std.", 0))), 2)
-
-    return (date_value, art, unit, desc, hours)
-
-def merge_without_duplicates(existing_df: pd.DataFrame, new_df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
-    """Hängt neue Daten an bestehende an und überspringt Dubletten."""
-    if existing_df.empty:
-        return new_df.copy(), len(new_df), 0
-
-    existing = existing_df.copy()
-    new = new_df.copy()
-
-    existing_keys = set(existing.apply(prepare_duplicate_key, axis=1).tolist())
-
-    rows_to_add = []
-    skipped = 0
-
-    for _, row in new.iterrows():
-        key = prepare_duplicate_key(row)
-        if key in existing_keys:
-            skipped += 1
-            continue
-
-        existing_keys.add(key)
-        rows_to_add.append(row)
-
-    if rows_to_add:
-        add_df = pd.DataFrame(rows_to_add, columns=new.columns)
-        merged = pd.concat([existing, add_df], ignore_index=True)
-    else:
-        merged = existing
-
-    # Sicherheit: auch bereits entstandene Dubletten nach gleichem Schlüssel entfernen
-    before_final = len(merged)
-    merged["_dup_key"] = merged.apply(prepare_duplicate_key, axis=1)
-    merged = merged.drop_duplicates(subset=["_dup_key"], keep="first").drop(columns=["_dup_key"])
-    skipped += before_final - len(merged)
-
-    # Nummerierung neu setzen, damit # sauber bleibt
-    if "#" in merged.columns:
-        merged["#"] = range(1, len(merged) + 1)
-
-    return merged.reset_index(drop=True), len(rows_to_add), skipped
-
 
 
 def read_input_file(path: str) -> pd.DataFrame:
@@ -461,75 +296,6 @@ def parse_pasted_portal_text(text: str) -> pd.DataFrame:
 
     return pd.DataFrame(rows, columns=["#", "Datum", "Art", "Einheit", "Beschreibung", "Std.", "*"])
 
-
-def parse_version(version: str):
-    """Vergleicht Versionen wie 2.7.10 korrekt."""
-    parts = []
-    for part in str(version).split("."):
-        try:
-            parts.append(int(part))
-        except ValueError:
-            parts.append(0)
-
-    while len(parts) < 3:
-        parts.append(0)
-
-    return tuple(parts)
-
-
-def is_newer_version(online_version: str, current_version: str) -> bool:
-    return parse_version(online_version) > parse_version(current_version)
-
-
-def get_current_app_bundle() -> Path | None:
-    """Ermittelt den Pfad zur aktuell laufenden .app."""
-    try:
-        exe = Path(sys.executable).resolve()
-
-        # PyInstaller .app:
-        # RK DienstLog.app/Contents/MacOS/RK DienstLog
-        if exe.parent.name == "MacOS" and exe.parent.parent.name == "Contents":
-            return exe.parent.parent.parent
-
-        return None
-    except Exception:
-        return None
-
-
-
-def get_ssl_context():
-    """Robuster SSL-Kontext für Windows/PyInstaller/GitHub Downloads."""
-    try:
-        if certifi is not None:
-            return ssl.create_default_context(cafile=certifi.where())
-    except Exception:
-        pass
-
-    try:
-        return ssl.create_default_context()
-    except Exception:
-        return None
-
-
-def download_file_secure(url: str, target_path: Path):
-    """Lädt Dateien mit explizitem Zertifikats-Kontext herunter."""
-    context = get_ssl_context()
-
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": f"{APP_TITLE}/{APP_VERSION}"
-        }
-    )
-
-    if context is not None:
-        response = urllib.request.urlopen(request, context=context, timeout=60)
-    else:
-        response = urllib.request.urlopen(request, timeout=60)
-
-    with response:
-        with open(target_path, "wb") as f:
-            shutil.copyfileobj(response, f)
 
 class PasteDialog(ctk.CTkToplevel):
     def __init__(self, parent, callback):
@@ -874,7 +640,6 @@ class SplashScreen(ctk.CTkToplevel):
 
         self.overrideredirect(True)
         self.attributes("-topmost", True)
-        set_window_icon(self)
 
         width = 380
         height = 380
@@ -941,13 +706,16 @@ class RktApp(ctk.CTk):
         set_macos_dock_icon()
 
         self.title(APP_TITLE)
-        set_window_icon(self)
+        try:
+            if Path(APP_ICON_PNG).exists():
+                self.iconphoto(True, tk.PhotoImage(file=APP_ICON_PNG))
+        except Exception:
+            pass
         self.geometry(self.settings.get("geometry", "1320x860"))
         self.minsize(1160, 740)
 
         self.df_all = pd.DataFrame(columns=["#", "Datum", "Art", "Einheit", "Beschreibung", "Std.", "*"])
         self.filter_var = ctk.StringVar(value=self.settings.get("filter_art", "RKT-FRW"))
-        self.year_filter_var = ctk.StringVar(value=self.settings.get("filter_year", "Alle"))
         self.month_filter_var = ctk.StringVar(value=self.settings.get("filter_month", "Alle"))
         self.unit_filter_var = ctk.StringVar(value=self.settings.get("filter_unit", "Alle"))
         self.theme_var = ctk.StringVar(value=initial_theme)
@@ -964,9 +732,6 @@ class RktApp(ctk.CTk):
         self.setup_macos_menu()
         self.load_autosave()
 
-        # Automatische Update-Prüfung kurz nach dem Start
-        self.after(2500, lambda: self.check_for_updates(silent=True))
-
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def load_settings(self):
@@ -981,7 +746,6 @@ class RktApp(ctk.CTk):
         settings = {
             "theme": self.theme_var.get(),
             "filter_art": self.filter_var.get(),
-            "filter_year": self.year_filter_var.get(),
             "filter_month": self.month_filter_var.get(),
             "filter_unit": self.unit_filter_var.get(),
             "chart_mode": self.current_chart_mode,
@@ -1048,26 +812,22 @@ class RktApp(ctk.CTk):
         self.filter_dropdown = ctk.CTkOptionMenu(sidebar, values=ART_OPTIONS, variable=self.filter_var, command=lambda _: self.refresh_views())
         self.filter_dropdown.grid(row=8, column=0, padx=22, pady=(0, 8), sticky="ew")
 
-        ctk.CTkLabel(sidebar, text="Jahr", text_color="#AAB2C0").grid(row=9, column=0, padx=24, pady=(2, 2), sticky="w")
-        self.year_dropdown = ctk.CTkOptionMenu(sidebar, values=["Alle"], variable=self.year_filter_var, command=lambda _: self.refresh_views())
-        self.year_dropdown.grid(row=10, column=0, padx=22, pady=(0, 8), sticky="ew")
-
-        ctk.CTkLabel(sidebar, text="Monat", text_color="#AAB2C0").grid(row=11, column=0, padx=24, pady=(2, 2), sticky="w")
+        ctk.CTkLabel(sidebar, text="Monat", text_color="#AAB2C0").grid(row=9, column=0, padx=24, pady=(2, 2), sticky="w")
         self.month_dropdown = ctk.CTkOptionMenu(sidebar, values=["Alle"], variable=self.month_filter_var, command=lambda _: self.refresh_views())
-        self.month_dropdown.grid(row=12, column=0, padx=22, pady=(0, 8), sticky="ew")
+        self.month_dropdown.grid(row=10, column=0, padx=22, pady=(0, 8), sticky="ew")
 
-        ctk.CTkLabel(sidebar, text="Zug / Einheit", text_color="#AAB2C0").grid(row=13, column=0, padx=24, pady=(2, 2), sticky="w")
+        ctk.CTkLabel(sidebar, text="Zug / Einheit", text_color="#AAB2C0").grid(row=11, column=0, padx=24, pady=(2, 2), sticky="w")
         self.unit_dropdown = ctk.CTkOptionMenu(sidebar, values=["Alle"], variable=self.unit_filter_var, command=lambda _: self.refresh_views())
-        self.unit_dropdown.grid(row=14, column=0, padx=22, pady=(0, 8), sticky="ew")
+        self.unit_dropdown.grid(row=12, column=0, padx=22, pady=(0, 8), sticky="ew")
 
-        ctk.CTkButton(sidebar, text="Filter zurücksetzen", command=self.reset_filters, height=36, fg_color="#3A3F47", hover_color="#4A505A").grid(row=15, column=0, padx=22, pady=(6, 14), sticky="ew")
+        ctk.CTkButton(sidebar, text="Filter zurücksetzen", command=self.reset_filters, height=36, fg_color="#3A3F47", hover_color="#4A505A").grid(row=13, column=0, padx=22, pady=(6, 14), sticky="ew")
 
-        ctk.CTkLabel(sidebar, text="Darstellung", text_color="#AAB2C0").grid(row=16, column=0, padx=24, pady=(4, 2), sticky="w")
+        ctk.CTkLabel(sidebar, text="Darstellung", text_color="#AAB2C0").grid(row=14, column=0, padx=24, pady=(4, 2), sticky="w")
         self.theme_switch = ctk.CTkSegmentedButton(sidebar, values=["Dark", "Light"], variable=self.theme_var, command=self.change_theme)
-        self.theme_switch.grid(row=17, column=0, padx=22, pady=(0, 8), sticky="ew")
+        self.theme_switch.grid(row=15, column=0, padx=22, pady=(0, 8), sticky="ew")
 
         self.source_label = ctk.CTkLabel(sidebar, text=self.source_name, text_color="#AAB2C0", wraplength=230, justify="left")
-        self.source_label.grid(row=18, column=0, padx=24, pady=(14, 28), sticky="sw")
+        self.source_label.grid(row=17, column=0, padx=24, pady=(14, 28), sticky="sw")
 
         main = ctk.CTkFrame(self, fg_color="transparent")
         main.grid(row=0, column=1, sticky="nsew", padx=24, pady=24)
@@ -1213,8 +973,6 @@ class RktApp(ctk.CTk):
 
             help_menu = tk.Menu(menubar, tearoff=0)
             help_menu.add_command(label="Anleitung", command=self.show_help)
-            help_menu.add_command(label="Changelog", command=self.show_changelog)
-            help_menu.add_command(label="Nach Updates suchen", command=lambda: self.check_for_updates(silent=False))
             help_menu.add_separator()
             help_menu.add_command(label=f"Über {APP_TITLE}", command=self.show_about)
 
@@ -1235,7 +993,6 @@ class RktApp(ctk.CTk):
     def show_about(self):
         top = ctk.CTkToplevel(self)
         top.title(f"Über {APP_TITLE}")
-        set_window_icon(top)
         top.geometry("430x300")
         top.resizable(False, False)
         top.transient(self)
@@ -1313,7 +1070,6 @@ class RktApp(ctk.CTk):
 """
         top = ctk.CTkToplevel(self)
         top.title("Anleitung")
-        set_window_icon(top)
         top.geometry("760x620")
         top.transient(self)
         top.grab_set()
@@ -1322,22 +1078,6 @@ class RktApp(ctk.CTk):
         box = ctk.CTkTextbox(top, font=("Arial", 14), wrap="word")
         box.pack(fill="both", expand=True, padx=18, pady=18)
         box.insert("1.0", help_text)
-        box.configure(state="disabled")
-
-        ctk.CTkButton(top, text="Schließen", command=top.destroy).pack(pady=(0, 18))
-
-    def show_changelog(self):
-        top = ctk.CTkToplevel(self)
-        top.title("Changelog")
-        top.geometry("760x620")
-        top.transient(self)
-        top.grab_set()
-        top.bind("<Escape>", lambda event: top.destroy())
-        set_window_icon(top)
-
-        box = ctk.CTkTextbox(top, font=("Arial", 14), wrap="word")
-        box.pack(fill="both", expand=True, padx=18, pady=18)
-        box.insert("1.0", CHANGELOG_TEXT)
         box.configure(state="disabled")
 
         ctk.CTkButton(top, text="Schließen", command=top.destroy).pack(pady=(0, 18))
@@ -1393,8 +1133,6 @@ class RktApp(ctk.CTk):
 
     def reset_filters(self):
         self.filter_var.set("RKT-FRW")
-        self.year_filter_var.set("Alle")
-        self.year_filter_var.set("Alle")
         self.month_filter_var.set("Alle")
         self.unit_filter_var.set("Alle")
         self.refresh_views()
@@ -1439,47 +1177,13 @@ class RktApp(ctk.CTk):
         try:
             raw = read_input_file(file)
             df = normalize_dataframe(raw)
-            self.import_data(df, os.path.basename(file))
+            self.set_data(df, os.path.basename(file))
             self.set_status(f"Datei geladen: {os.path.basename(file)}")
         except Exception as e:
             messagebox.showerror("Fehler beim Dateiimport", str(e))
 
     def open_paste_dialog(self):
-        PasteDialog(self, self.import_data)
-
-    def import_data(self, df: pd.DataFrame, source_name: str):
-        """Importiert neue Daten und fragt bei vorhandenen Daten nach Ersetzen/Erweitern."""
-        df = df.copy()
-        df["Std."] = df["Std."].apply(clean_hours)
-
-        if self.df_all.empty:
-            self.set_data(df, source_name)
-            return
-
-        dialog_text = (
-            "Es sind bereits Daten geladen.\n\n"
-            "Ja = bestehende Daten erweitern und Dubletten überspringen\n"
-            "Nein = bestehende Daten löschen und durch neuen Import ersetzen\n"
-            "Abbrechen = nichts importieren"
-        )
-
-        choice = messagebox.askyesnocancel("Daten importieren", dialog_text)
-
-        if choice is None:
-            self.set_status("Import abgebrochen")
-            return
-
-        if choice is False:
-            self.set_data(df, source_name)
-            return
-
-        merged, added, skipped = merge_without_duplicates(self.df_all, df)
-        self.set_data(merged, f"{self.source_name.splitlines()[1] if 'Quelle:' in self.source_name else 'Bestehende Daten'} + {source_name}")
-        self.set_status(f"Import erweitert: {added} neu, {skipped} doppelt übersprungen")
-        messagebox.showinfo(
-            "Import erweitert",
-            f"Neue Einträge: {added}\nDoppelte übersprungen: {skipped}\nGesamt: {len(merged)}"
-        )
+        PasteDialog(self, self.set_data)
 
     def set_data(self, df: pd.DataFrame, source_name: str):
         self.df_all = df.copy()
@@ -1500,7 +1204,6 @@ class RktApp(ctk.CTk):
         self.df_all = pd.DataFrame(columns=["#", "Datum", "Art", "Einheit", "Beschreibung", "Std.", "*"])
         self.source_name = "Keine Daten geladen"
         self.source_label.configure(text=self.source_name)
-        self.year_filter_var.set("Alle")
         self.month_filter_var.set("Alle")
         self.unit_filter_var.set("Alle")
         self.update_filter_options()
@@ -1508,46 +1211,22 @@ class RktApp(ctk.CTk):
         self.autosave_data()
         self.set_status("Daten gelöscht")
 
-    def get_month_options_for_year(self, selected_year):
-        if self.df_all.empty:
-            return ["Alle"]
-
-        tmp = self.df_all.copy()
-        tmp["_date"] = pd.to_datetime(tmp["Datum"], dayfirst=True, errors="coerce")
-        tmp = tmp.dropna(subset=["_date"])
-
-        if selected_year and selected_year != "Alle":
-            tmp = tmp[tmp["_date"].dt.strftime("%Y") == selected_year]
-
-        month_keys = sorted(tmp["_date"].dt.strftime("%m").unique().tolist())
-        return ["Alle"] + month_keys
-
     def update_filter_options(self):
         if self.df_all.empty:
-            years = ["Alle"]
+            months = ["Alle"]
             units = ["Alle"]
         else:
             tmp = self.df_all.copy()
             tmp["_date"] = pd.to_datetime(tmp["Datum"], dayfirst=True, errors="coerce")
-            valid_dates = tmp.dropna(subset=["_date"])
-
-            year_keys = sorted(valid_dates["_date"].dt.strftime("%Y").unique().tolist())
-            years = ["Alle"] + year_keys
+            month_keys = sorted(tmp.dropna(subset=["_date"])["_date"].dt.strftime("%Y-%m").unique().tolist())
+            months = ["Alle"] + [format_month_display(m) for m in month_keys]
 
             units_raw = sorted([u for u in self.df_all["Einheit"].dropna().astype(str).unique().tolist() if u.strip()])
             units = ["Alle"] + units_raw
 
-        current_year = self.year_filter_var.get()
         current_month = self.month_filter_var.get()
         current_unit = self.unit_filter_var.get()
 
-        if current_year not in years:
-            self.year_filter_var.set("Alle")
-            current_year = "Alle"
-
-        months = self.get_month_options_for_year(current_year)
-
-        self.year_dropdown.configure(values=years)
         self.month_dropdown.configure(values=months)
         self.unit_dropdown.configure(values=units)
 
@@ -1559,20 +1238,15 @@ class RktApp(ctk.CTk):
     def get_filtered_df(self):
         df = self.df_all.copy()
         selected_art = self.filter_var.get()
-        selected_year = self.year_filter_var.get()
         selected_month = self.month_filter_var.get()
         selected_unit = self.unit_filter_var.get()
 
         if selected_art and selected_art != "Alle" and not df.empty:
             df = df[df["Art"].astype(str).str.contains(selected_art, case=False, na=False)]
 
-        if selected_year and selected_year != "Alle" and not df.empty:
-            tmp_dates = pd.to_datetime(df["Datum"], dayfirst=True, errors="coerce")
-            df = df[tmp_dates.dt.strftime("%Y") == selected_year]
-
         if selected_month and selected_month != "Alle" and not df.empty:
             tmp_dates = pd.to_datetime(df["Datum"], dayfirst=True, errors="coerce")
-            df = df[tmp_dates.dt.strftime("%m") == selected_month]
+            df = df[tmp_dates.dt.strftime("%Y-%m") == month_key_from_display(selected_month)]
 
         if selected_unit and selected_unit != "Alle" and not df.empty:
             df = df[df["Einheit"].astype(str) == selected_unit]
@@ -1606,7 +1280,6 @@ class RktApp(ctk.CTk):
             "ERGEBNIS",
             "=" * 60,
             f"Filter Art: {self.filter_var.get()}",
-            f"Filter Jahr: {self.year_filter_var.get()}",
             f"Filter Monat: {self.month_filter_var.get()}",
             f"Filter Einheit: {self.unit_filter_var.get()}",
             "",
@@ -1857,11 +1530,11 @@ class RktApp(ctk.CTk):
         for spine in ax.spines.values():
             spine.set_color(bg)
 
-        if require_single_month and (self.year_filter_var.get() == "Alle" or self.month_filter_var.get() == "Alle"):
+        if require_single_month and self.month_filter_var.get() == "Alle":
             ax.text(
                 0.5,
                 0.5,
-                "Bitte zuerst links Jahr und Monat auswählen",
+                "Bitte zuerst links einen Monat auswählen",
                 ha="center",
                 va="center",
                 color=fg,
@@ -1967,373 +1640,6 @@ class RktApp(ctk.CTk):
         if tmp.empty:
             return []
         return [format_month_display(m) for m in sorted(tmp["_date"].dt.strftime("%Y-%m").unique().tolist())]
-
-    def check_for_updates(self, silent=False):
-        if not APP_UPDATE_URL:
-            if not silent:
-                messagebox.showinfo(
-                    "Updates",
-                    "Es ist keine Update-URL konfiguriert.\n\nTrage in version.json eine update_url ein."
-                )
-            return
-
-        self.set_status("Suche nach Updates …")
-
-        def worker():
-            try:
-                context = get_ssl_context()
-                request = urllib.request.Request(
-                    APP_UPDATE_URL,
-                    headers={"User-Agent": f"{APP_TITLE}/{APP_VERSION}"}
-                )
-
-                if context is not None:
-                    response = urllib.request.urlopen(request, context=context, timeout=12)
-                else:
-                    response = urllib.request.urlopen(request, timeout=12)
-
-                with response:
-                    raw = response.read().decode("utf-8")
-                    update_info = json.loads(raw)
-
-                self.after(0, lambda: self.handle_update_info(update_info, silent=silent))
-            except Exception as e:
-                self.after(0, lambda err=e: self.handle_update_error(err, silent=silent))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def handle_update_error(self, error, silent=False):
-        self.set_status("Update-Prüfung fehlgeschlagen")
-        if not silent:
-            messagebox.showerror("Update-Prüfung fehlgeschlagen", str(error))
-
-    def handle_update_info(self, update_info: dict, silent=False):
-        online_version = update_info.get("version", "0.0.0")
-
-        if not is_newer_version(online_version, APP_VERSION):
-            self.set_status("Keine neue Version verfügbar")
-            if not silent:
-                messagebox.showinfo(
-                    "Keine Updates",
-                    f"Du nutzt bereits die aktuelle Version {APP_VERSION}."
-                )
-            return
-
-        changelog = update_info.get("changelog", [])
-        changelog_text = "\n".join(f"- {item}" for item in changelog) if changelog else "- Keine Änderungsinfos vorhanden"
-
-        msg = (
-            f"Neue Version verfügbar: {online_version}\n\n"
-            f"Aktuelle Version: {APP_VERSION}\n\n"
-            f"Änderungen:\n{changelog_text}\n\n"
-            "Möchtest du das Update jetzt herunterladen und installieren?"
-        )
-
-        install = messagebox.askyesno("Update verfügbar", msg)
-
-        if install:
-            self.download_and_install_update(update_info)
-
-    def download_and_install_update(self, update_info: dict):
-        if sys.platform == "darwin":
-            self.download_and_install_macos_update(update_info)
-        elif sys.platform.startswith("win"):
-            self.download_and_install_windows_update(update_info)
-        else:
-            messagebox.showinfo(
-                "Update",
-                "Automatische Installation ist aktuell nur für macOS und Windows umgesetzt."
-            )
-
-    def download_and_install_windows_update(self, update_info: dict):
-        installer_url = update_info.get("windows_url") or update_info.get("windows_installer_url")
-        if not installer_url:
-            messagebox.showerror(
-                "Update nicht möglich",
-                "In der update.json fehlt windows_url."
-            )
-            return
-
-        online_version = update_info.get("version", "neu")
-        self.show_update_progress(f"Windows Update {online_version} wird heruntergeladen …")
-
-        def worker():
-            try:
-                update_dir = APP_DIR / "updates"
-                update_dir.mkdir(exist_ok=True)
-
-                installer_path = update_dir / f"RK_DienstLog_Setup_{online_version}.exe"
-                download_file_secure(installer_url, installer_path)
-
-                self.after(0, lambda: self.finish_windows_update(installer_path, online_version))
-            except Exception as e:
-                self.after(0, lambda err=e: self.update_failed(err))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def finish_windows_update(self, installer_path: Path, online_version: str):
-        try:
-            if hasattr(self, "update_status_label"):
-                self.update_status_label.configure(
-                    text=f"Update {online_version} ist bereit. Der Installer wird gestartet …"
-                )
-            if hasattr(self, "update_progress"):
-                self.update_progress.stop()
-
-            messagebox.showinfo(
-                "Update bereit",
-                f"RK DienstLog startet jetzt den Installer für Version {online_version}.\n\n"
-                "Falls Windows nach Berechtigungen fragt, bitte bestätigen."
-            )
-
-            subprocess.Popen([
-                str(installer_path),
-                "/SILENT",
-                "/SUPPRESSMSGBOXES",
-                "/NORESTART"
-            ])
-
-        except Exception as e:
-            self.update_failed(e)
-            return
-
-        self.on_close()
-
-    def download_and_install_macos_update(self, update_info: dict):
-        if sys.platform != "darwin":
-            messagebox.showinfo(
-                "Update",
-                "Automatische Installation ist aktuell nur für macOS umgesetzt."
-            )
-            return
-
-        app_bundle = get_current_app_bundle()
-        if app_bundle is None:
-            messagebox.showwarning(
-                "Update nicht möglich",
-                "Die App läuft aktuell nicht als .app Bundle.\n\nStarte RK DienstLog aus der gebauten .app, nicht direkt per Python."
-            )
-            return
-
-        zip_url = update_info.get("mac_zip_url")
-        if not zip_url:
-            messagebox.showerror(
-                "Update nicht möglich",
-                "In der update.json fehlt mac_zip_url."
-            )
-            return
-
-        online_version = update_info.get("version", "neu")
-        self.show_update_progress(f"Update {online_version} wird heruntergeladen …")
-
-        def worker():
-            try:
-                update_dir = APP_DIR / "updates"
-                update_dir.mkdir(exist_ok=True)
-
-                zip_path = update_dir / f"RK_DienstLog_{online_version}_mac.zip"
-                extract_dir = update_dir / f"RK_DienstLog_{online_version}_extract"
-
-                if extract_dir.exists():
-                    shutil.rmtree(extract_dir)
-                extract_dir.mkdir(parents=True, exist_ok=True)
-
-                download_file_secure(zip_url, zip_path)
-
-                # Wichtig auf macOS:
-                # Python zipfile zerstört bei .app Bundles teils Symlinks/Frameworks.
-                # ditto erhält die macOS App-Struktur korrekt.
-                subprocess.run(
-                    ["/usr/bin/ditto", "-x", "-k", str(zip_path), str(extract_dir)],
-                    check=True
-                )
-
-                new_app = None
-                for item in extract_dir.rglob("*.app"):
-                    if item.name == "RK DienstLog.app":
-                        new_app = item
-                        break
-
-                if new_app is None:
-                    raise RuntimeError("Im Update-ZIP wurde keine 'RK DienstLog.app' gefunden.")
-
-                helper_script = self.create_mac_update_script()
-                self.pending_update_new_app = new_app
-
-                self.after(0, lambda: self.finish_update(helper_script, online_version))
-            except Exception as e:
-                self.after(0, lambda err=e: self.update_failed(err))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def show_update_progress(self, text):
-        self.update_window = ctk.CTkToplevel(self)
-        self.update_window.title("Update")
-        self.update_window.geometry("430x190")
-        self.update_window.resizable(False, False)
-        self.update_window.transient(self)
-        self.update_window.grab_set()
-        set_window_icon(self.update_window)
-
-        frame = ctk.CTkFrame(self.update_window, corner_radius=18)
-        frame.pack(fill="both", expand=True, padx=18, pady=18)
-
-        ctk.CTkLabel(frame, text="RK DienstLog Update", font=ctk.CTkFont(size=19, weight="bold")).pack(pady=(18, 8))
-        self.update_status_label = ctk.CTkLabel(frame, text=text, text_color="#AAB2C0", wraplength=350)
-        self.update_status_label.pack(pady=(0, 14))
-
-        self.update_progress = ctk.CTkProgressBar(frame, mode="indeterminate", width=280)
-        self.update_progress.pack(pady=(0, 18))
-        self.update_progress.start()
-
-    def create_mac_update_script(self) -> Path:
-        script_path = APP_DIR / "apply_update.sh"
-
-        script = """#!/bin/bash
-set -u
-
-OLD_APP="$1"
-NEW_APP="$2"
-OLD_PID="$3"
-
-EXECUTABLE="RK DienstLog"
-OLD_PARENT="$(dirname "$OLD_APP")"
-BACKUP_APP="${OLD_APP}.backup"
-STAGED_APP="${OLD_PARENT}/.RK DienstLog.app.new"
-LOG_FILE="$HOME/.rk_dienstlog/update.log"
-
-echo "---- RK DienstLog Update $(date) ----" >> "$LOG_FILE"
-echo "OLD_APP=$OLD_APP" >> "$LOG_FILE"
-echo "NEW_APP=$NEW_APP" >> "$LOG_FILE"
-
-while kill -0 "$OLD_PID" 2>/dev/null; do
-  sleep 0.5
-done
-
-cleanup_failed() {
-  echo "Update failed, restoring backup..." >> "$LOG_FILE"
-  rm -rf "$OLD_APP"
-
-  if [ -d "$BACKUP_APP" ]; then
-    /usr/bin/ditto "$BACKUP_APP" "$OLD_APP"
-  fi
-
-  rm -rf "$STAGED_APP"
-
-  if [ -d "$OLD_APP" ]; then
-    chmod +x "$OLD_APP/Contents/MacOS/$EXECUTABLE" 2>/dev/null || true
-    xattr -dr com.apple.quarantine "$OLD_APP" 2>/dev/null || true
-    open "$OLD_APP"
-  fi
-
-  exit 1
-}
-
-if [ ! -d "$NEW_APP" ]; then
-  echo "NEW_APP not found" >> "$LOG_FILE"
-  cleanup_failed
-fi
-
-rm -rf "$STAGED_APP"
-rm -rf "$BACKUP_APP"
-
-echo "Copying new app to staging with ditto..." >> "$LOG_FILE"
-/usr/bin/ditto "$NEW_APP" "$STAGED_APP" >> "$LOG_FILE" 2>&1 || cleanup_failed
-
-if [ ! -f "$STAGED_APP/Contents/MacOS/$EXECUTABLE" ]; then
-  echo "Executable missing in staged app" >> "$LOG_FILE"
-  cleanup_failed
-fi
-
-if [ ! -f "$STAGED_APP/Contents/Frameworks/Python" ]; then
-  echo "Python framework missing in staged app" >> "$LOG_FILE"
-  cleanup_failed
-fi
-
-chmod +x "$STAGED_APP/Contents/MacOS/$EXECUTABLE" >> "$LOG_FILE" 2>&1 || cleanup_failed
-xattr -dr com.apple.quarantine "$STAGED_APP" 2>/dev/null || true
-
-if /usr/bin/file "$STAGED_APP/Contents/Frameworks/Python" | /usr/bin/grep -q "ASCII text"; then
-  echo "Python framework is invalid ASCII text in staged app" >> "$LOG_FILE"
-  cleanup_failed
-fi
-
-if [ -d "$OLD_APP" ]; then
-  echo "Backing up old app with ditto..." >> "$LOG_FILE"
-  /usr/bin/ditto "$OLD_APP" "$BACKUP_APP" >> "$LOG_FILE" 2>&1 || cleanup_failed
-fi
-
-echo "Installing staged app with ditto..." >> "$LOG_FILE"
-rm -rf "$OLD_APP" >> "$LOG_FILE" 2>&1 || cleanup_failed
-/usr/bin/ditto "$STAGED_APP" "$OLD_APP" >> "$LOG_FILE" 2>&1 || cleanup_failed
-
-chmod +x "$OLD_APP/Contents/MacOS/$EXECUTABLE" >> "$LOG_FILE" 2>&1 || cleanup_failed
-xattr -dr com.apple.quarantine "$OLD_APP" 2>/dev/null || true
-
-if /usr/bin/file "$OLD_APP/Contents/Frameworks/Python" | /usr/bin/grep -q "ASCII text"; then
-  echo "Python framework invalid after install" >> "$LOG_FILE"
-  cleanup_failed
-fi
-
-echo "Starting updated app..." >> "$LOG_FILE"
-open "$OLD_APP" >> "$LOG_FILE" 2>&1 || cleanup_failed
-
-sleep 2
-rm -rf "$BACKUP_APP"
-rm -rf "$STAGED_APP"
-rm -f "$0"
-
-echo "Update successful" >> "$LOG_FILE"
-exit 0
-"""
-
-        script_path.write_text(script, encoding="utf-8")
-        script_path.chmod(0o755)
-        return script_path
-
-    def finish_update(self, helper_script: Path, online_version: str):
-        try:
-            if hasattr(self, "update_status_label"):
-                self.update_status_label.configure(text=f"Update {online_version} ist bereit. RK DienstLog wird neu gestartet …")
-            if hasattr(self, "update_progress"):
-                self.update_progress.stop()
-
-            messagebox.showinfo(
-                "Update bereit",
-                f"RK DienstLog wird jetzt auf Version {online_version} aktualisiert und neu gestartet."
-            )
-
-            app_bundle = get_current_app_bundle()
-            new_app = getattr(self, "pending_update_new_app", None)
-
-            if app_bundle is None or new_app is None:
-                raise RuntimeError("Update-Dateien wurden nicht gefunden.")
-
-            subprocess.Popen([
-                "/bin/bash",
-                str(helper_script),
-                str(app_bundle),
-                str(new_app),
-                str(os.getpid())
-            ])
-
-        except Exception as e:
-            self.update_failed(e)
-            return
-
-        self.on_close()
-
-    def update_failed(self, error):
-        try:
-            if hasattr(self, "update_progress"):
-                self.update_progress.stop()
-            if hasattr(self, "update_window"):
-                self.update_window.destroy()
-        except Exception:
-            pass
-
-        self.set_status("Update fehlgeschlagen")
-        messagebox.showerror("Update fehlgeschlagen", str(error))
 
     def open_export_dialog(self):
         if self.df_all.empty:

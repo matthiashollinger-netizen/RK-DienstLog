@@ -78,16 +78,6 @@ APP_UPDATE_URL = VERSION_INFO.get("update_url", "")
 
 CHANGELOG_TEXT = """RK DienstLog – Changelog
 
-Version 2.9.2
-- Dubletten-Erkennung beim erweiterten Import verbessert.
-- Monatsfilter bleibt abhängig vom gewählten Jahr optimiert.
-- Save & Load bleibt als nächster sauberer Umsetzungsschritt vorgemerkt.
-
-Version 2.9.1
-- Dubletten-Erkennung beim erweiterten Import verbessert.
-- Doppelte Einträge werden nun robuster über Datum, Art, Einheit und Stunden erkannt.
-- Monatsfilter zeigt bei ausgewähltem Jahr nur Monate mit vorhandenen Diensten an.
-
 Version 2.8.12
 - Portal-Import vorerst wieder entfernt.
 - Jahresfilter ergänzt.
@@ -273,11 +263,7 @@ def clean_unit_display(value) -> str:
 
 
 def prepare_duplicate_key(row) -> tuple:
-    """Robuster Schlüssel zur Erkennung doppelter Einträge.
-
-    Beschreibung wird berücksichtigt, damit legitime gleiche Dienste am
-    gleichen Tag nicht fälschlich als doppelt erkannt werden.
-    """
+    """Robuster Schlüssel zur Erkennung doppelter Einträge."""
     date_value = clean_text(row.get("Datum", ""))
     try:
         dt = pd.to_datetime(date_value, dayfirst=True, errors="coerce")
@@ -286,18 +272,13 @@ def prepare_duplicate_key(row) -> tuple:
     except Exception:
         pass
 
-    def norm(value):
-        value = clean_text(value).lower().strip()
-        value = re.sub(r"\\s+", " ", value)
-        value = value.replace("–", "-").replace("—", "-")
-        return value
-
-    art = norm(row.get("Art", ""))
-    unit = norm(clean_unit_display(row.get("Einheit", "")))
-    desc = norm(row.get("Beschreibung", ""))
-    hours = round(float(clean_hours(row.get("Std.", 0))), 2)
+    art = clean_text(row.get("Art", "")).lower()
+    unit = clean_unit_display(row.get("Einheit", "")).lower()
+    desc = clean_text(row.get("Beschreibung", "")).lower()
+    hours = round(clean_hours(row.get("Std.", 0)), 2)
 
     return (date_value, art, unit, desc, hours)
+
 
 def merge_without_duplicates(existing_df: pd.DataFrame, new_df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
     """Hängt neue Daten an bestehende an und überspringt Dubletten."""
@@ -327,17 +308,11 @@ def merge_without_duplicates(existing_df: pd.DataFrame, new_df: pd.DataFrame) ->
     else:
         merged = existing
 
-    # Sicherheit: auch bereits entstandene Dubletten nach gleichem Schlüssel entfernen
-    before_final = len(merged)
-    merged["_dup_key"] = merged.apply(prepare_duplicate_key, axis=1)
-    merged = merged.drop_duplicates(subset=["_dup_key"], keep="first").drop(columns=["_dup_key"])
-    skipped += before_final - len(merged)
-
     # Nummerierung neu setzen, damit # sauber bleibt
     if "#" in merged.columns:
         merged["#"] = range(1, len(merged) + 1)
 
-    return merged.reset_index(drop=True), len(rows_to_add), skipped
+    return merged, len(rows_to_add), skipped
 
 
 
@@ -1508,23 +1483,10 @@ class RktApp(ctk.CTk):
         self.autosave_data()
         self.set_status("Daten gelöscht")
 
-    def get_month_options_for_year(self, selected_year):
-        if self.df_all.empty:
-            return ["Alle"]
-
-        tmp = self.df_all.copy()
-        tmp["_date"] = pd.to_datetime(tmp["Datum"], dayfirst=True, errors="coerce")
-        tmp = tmp.dropna(subset=["_date"])
-
-        if selected_year and selected_year != "Alle":
-            tmp = tmp[tmp["_date"].dt.strftime("%Y") == selected_year]
-
-        month_keys = sorted(tmp["_date"].dt.strftime("%m").unique().tolist())
-        return ["Alle"] + month_keys
-
     def update_filter_options(self):
         if self.df_all.empty:
             years = ["Alle"]
+            months = ["Alle"]
             units = ["Alle"]
         else:
             tmp = self.df_all.copy()
@@ -1534,6 +1496,9 @@ class RktApp(ctk.CTk):
             year_keys = sorted(valid_dates["_date"].dt.strftime("%Y").unique().tolist())
             years = ["Alle"] + year_keys
 
+            month_keys = sorted(valid_dates["_date"].dt.strftime("%m").unique().tolist())
+            months = ["Alle"] + month_keys
+
             units_raw = sorted([u for u in self.df_all["Einheit"].dropna().astype(str).unique().tolist() if u.strip()])
             units = ["Alle"] + units_raw
 
@@ -1541,16 +1506,12 @@ class RktApp(ctk.CTk):
         current_month = self.month_filter_var.get()
         current_unit = self.unit_filter_var.get()
 
-        if current_year not in years:
-            self.year_filter_var.set("Alle")
-            current_year = "Alle"
-
-        months = self.get_month_options_for_year(current_year)
-
         self.year_dropdown.configure(values=years)
         self.month_dropdown.configure(values=months)
         self.unit_dropdown.configure(values=units)
 
+        if current_year not in years:
+            self.year_filter_var.set("Alle")
         if current_month not in months:
             self.month_filter_var.set("Alle")
         if current_unit not in units:
