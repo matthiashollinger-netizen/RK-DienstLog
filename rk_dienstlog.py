@@ -101,6 +101,9 @@ def _validate_download_url(url: str) -> str:
 
 CHANGELOG_TEXT = """RK DienstLog – Changelog
 
+Version 3.0.3
+- Gesamtstunden-Karte: Umrechnung auf Kalenderbasis (1 Tag = 24 h, 1 Woche = 168 h, 1 Monat = 730 h, 1 Jahr = 8760 h).
+
 Version 3.0.2
 - Gesamtstunden-Karte: Toggle rechnet Stunden um in Tage / Wochen / Monate / Jahre (Basis: 8 h/Tag).
 
@@ -1415,11 +1418,10 @@ class RktApp(ctk.CTk):
         self._hours_value_label.configure(text=h_val)
         self._hours_label_widget.configure(text=h_lbl)
 
-    # Umrechnungsbasis: 1 Arbeitstag = 8 h
-    _HOURS_PER_DAY = 8.0
-    _HOURS_PER_WEEK = 40.0
-    _HOURS_PER_MONTH = 160.0
-    _HOURS_PER_YEAR = 1920.0
+    _HOURS_PER_DAY = 24.0
+    _HOURS_PER_WEEK = 168.0
+    _HOURS_PER_MONTH = 730.0
+    _HOURS_PER_YEAR = 8760.0
 
     def _compute_period_hours(self, df) -> tuple[str, str]:
         """Returns (value_text, card_label) for the currently selected period."""
@@ -1429,17 +1431,13 @@ class RktApp(ctk.CTk):
         if period == "Gesamt":
             return f"{format_hours(total)} h", "Gesamtstunden"
         if period == "Tage":
-            val = total / self._HOURS_PER_DAY
-            return f"{format_hours(val)} Tage", f"Gesamtstunden in Tagen  (1 Tag = {int(self._HOURS_PER_DAY)} h)"
+            return f"{format_hours(total / self._HOURS_PER_DAY)} Tage", "Gesamtstunden in Tagen"
         if period == "Wochen":
-            val = total / self._HOURS_PER_WEEK
-            return f"{format_hours(val)} Wochen", f"Gesamtstunden in Wochen  (1 Woche = {int(self._HOURS_PER_WEEK)} h)"
+            return f"{format_hours(total / self._HOURS_PER_WEEK)} Wochen", "Gesamtstunden in Wochen"
         if period == "Monate":
-            val = total / self._HOURS_PER_MONTH
-            return f"{format_hours(val)} Monate", f"Gesamtstunden in Monaten  (1 Monat = {int(self._HOURS_PER_MONTH)} h)"
+            return f"{format_hours(total / self._HOURS_PER_MONTH)} Monate", "Gesamtstunden in Monaten"
         if period == "Jahre":
-            val = total / self._HOURS_PER_YEAR
-            return f"{format_hours(val)} Jahre", f"Gesamtstunden in Jahren  (1 Jahr = {int(self._HOURS_PER_YEAR)} h)"
+            return f"{format_hours(total / self._HOURS_PER_YEAR)} Jahre", "Gesamtstunden in Jahren"
 
         return f"{format_hours(total)} h", "Gesamtstunden"
 

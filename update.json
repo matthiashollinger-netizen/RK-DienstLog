@@ -1,9 +1,8 @@
 {
-  "version": "3.0.2",
-  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v3.0.2/RK_DienstLog_3.0.2_mac.zip",
-  "windows_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v3.0.2/RK_DienstLog_Setup_3.0.2.exe",
+  "version": "3.0.3",
+  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v3.0.3/RK_DienstLog_3.0.3_mac.zip",
+  "windows_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v3.0.3/RK_DienstLog_Setup_3.0.3.exe",
   "changelog": [
-    "Gesamtstunden-Karte: Umrechnung in Tage / Wochen / Monate / Jahre (Basis 8 h/Tag)",
-    "Security: SSL, Path-Traversal und URL-Allowlist Fixes"
+    "Stunden-Umrechnung auf Kalenderbasis: 1 Tag = 24 h, 1 Woche = 168 h, 1 Monat = 730 h, 1 Jahr = 8760 h"
   ]
 }
