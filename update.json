@@ -1,11 +1,11 @@
 {
-  "version": "2.9.3",
-  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.9.3/RK_DienstLog_2.9.3_mac.zip",
-  "windows_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.9.3/RK_DienstLog_Setup_2.9.3.exe",
+  "version": "3.0.0",
+  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v3.0.0/RK_DienstLog_3.0.0_mac.zip",
+  "windows_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v3.0.0/RK_DienstLog_Setup_3.0.0.exe",
   "changelog": [
-    "GitHub Actions CI/CD eingerichtet",
-    "macOS und Windows Build vollautomatisch",
-    "Spec-Fix: relativer Icon-Pfad",
-    "rk_dienstlog_icon.png im App-Bundle inkludiert"
+    "Projekt speichern/laden (.rkdienstlog) – speichert alle Daten, Filter und Theme",
+    "Dubletten-Dialog: bei Importen mögliche Dubletten einzeln prüfbar",
+    "Datensätze-Tab: Beschreibungs-Spalte, Suchleiste und Inline-Bearbeitung",
+    "Analytics-Tab: KPI-Karten, Jahresvergleich-Chart und GitHub-style Heatmap"
   ]
 }

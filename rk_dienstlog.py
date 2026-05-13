@@ -78,6 +78,16 @@ APP_UPDATE_URL = VERSION_INFO.get("update_url", "")
 
 CHANGELOG_TEXT = """RK DienstLog – Changelog
 
+Version 3.0.0
+- Neues Feature: Projekt speichern/laden (.rkdienstlog Format – speichert alle Daten, Filter und Theme).
+- Speichern (⌘S / Strg+S), Speichern unter (⌘⇧S), Projekt öffnen (⌘O).
+- Titelleiste zeigt aktuellen Dateinamen und ungespeicherte Änderungen (•).
+- Neues Feature: Dubletten-Dialog – bei Importen werden mögliche Dubletten einzeln prüfbar.
+- Neues Feature: Datensätze-Tab mit Beschreibungs-Spalte, Suchleiste und Inline-Bearbeitung.
+- Doppelklick auf eine Zelle öffnet eine Eingabe direkt in der Tabelle.
+- Rechtsklick auf eine Zeile → Löschen oder Bearbeiten.
+- Neues Feature: Analytics-Tab mit KPI-Karten, Jahresvergleich-Chart und GitHub-style Aktivitäts-Heatmap.
+
 Version 2.9.3
 - GitHub Actions CI/CD eingerichtet: macOS und Windows Build vollautomatisch.
 - Spec-Fix: relativer Icon-Pfad für Build-Kompatibilität.
@@ -186,6 +196,7 @@ APP_DIR = Path.home() / ".rk_dienstlog"
 APP_DIR.mkdir(exist_ok=True)
 SETTINGS_FILE = APP_DIR / "settings.json"
 AUTOSAVE_FILE = APP_DIR / "autosave.csv"
+RECENT_FILE = APP_DIR / "recent.json"
 
 ART_OPTIONS = [
     "RKT-FRW",
@@ -535,6 +546,162 @@ def download_file_secure(url: str, target_path: Path):
     with response:
         with open(target_path, "wb") as f:
             shutil.copyfileobj(response, f)
+
+def save_project_file(path: Path, df: pd.DataFrame, state: dict):
+    data = {
+        "format_version": 1,
+        "app_version": APP_VERSION,
+        "saved_at": datetime.now().isoformat(),
+        "state": state,
+        "records": df.to_dict(orient="records")
+    }
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
+
+def load_project_file(path: Path) -> dict:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    records = raw.get("records", [])
+    state = raw.get("state", {})
+    if records:
+        df = pd.DataFrame(records)
+        df = normalize_dataframe(df)
+    else:
+        df = pd.DataFrame(columns=["#", "Datum", "Art", "Einheit", "Beschreibung", "Std.", "*"])
+    return {"df": df, "state": state}
+
+
+def find_import_diff(existing_df: pd.DataFrame, new_df: pd.DataFrame):
+    """Returns (unique_rows, duplicate_rows) as lists of row dicts from new_df."""
+    if existing_df.empty:
+        return list(new_df.to_dict(orient="records")), []
+    existing_keys = set(existing_df.apply(prepare_duplicate_key, axis=1).tolist())
+    unique, duplicates = [], []
+    for _, row in new_df.iterrows():
+        key = prepare_duplicate_key(row)
+        if key in existing_keys:
+            duplicates.append(row.to_dict())
+        else:
+            unique.append(row.to_dict())
+    return unique, duplicates
+
+
+class DuplicateReviewDialog(ctk.CTkToplevel):
+    """Shows possible duplicate rows; user picks which to import."""
+
+    def __init__(self, parent, duplicates: list, callback):
+        super().__init__(parent)
+        self.duplicates = duplicates
+        self.callback = callback
+        self.selected = [False] * len(duplicates)
+
+        self.title("Mögliche Dubletten prüfen")
+        self.geometry("1100x620")
+        self.minsize(900, 480)
+        self.transient(parent)
+        self.grab_set()
+        self.bind("<Escape>", lambda e: self._skip_all())
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+
+        ctk.CTkLabel(self, text="Mögliche Dubletten prüfen",
+                     font=ctk.CTkFont(size=22, weight="bold")).grid(
+            row=0, column=0, sticky="w", padx=24, pady=(20, 4))
+
+        ctk.CTkLabel(
+            self,
+            text=(f"{len(duplicates)} Einträge wurden als mögliche Dubletten erkannt. "
+                  "Wähle aus, welche du trotzdem importieren möchtest (Standard: keine). "
+                  "Klick auf eine Zeile zum Umschalten, Klick auf ✓ in der Kopfzeile zum Alle/Keine."),
+            wraplength=1060,
+            text_color="#AAB2C0",
+            justify="left"
+        ).grid(row=1, column=0, sticky="ew", padx=24, pady=(0, 10))
+
+        tree_frame = ctk.CTkFrame(self, fg_color="transparent")
+        tree_frame.grid(row=2, column=0, sticky="nsew", padx=24, pady=(0, 10))
+        tree_frame.grid_columnconfigure(0, weight=1)
+        tree_frame.grid_rowconfigure(0, weight=1)
+
+        columns = ["✓", "#", "Datum", "Art", "Einheit", "Beschreibung", "Std."]
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings")
+        widths = {"✓": 40, "#": 50, "Datum": 110, "Art": 170,
+                  "Einheit": 220, "Beschreibung": 300, "Std.": 75}
+        for col in columns:
+            if col == "✓":
+                self.tree.heading(col, text="✓", command=self._toggle_all)
+            else:
+                self.tree.heading(col, text=col)
+            anchor = "w" if col in ("Art", "Einheit", "Beschreibung") else "center"
+            self.tree.column(col, width=widths.get(col, 120), anchor=anchor)
+
+        yscroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        xscroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        self.tree.bind("<ButtonRelease-1>", self._on_click)
+
+        self._item_ids = []
+        for row in duplicates:
+            iid = self.tree.insert("", "end", values=(
+                "☐",
+                clean_text(row.get("#", "")),
+                clean_text(row.get("Datum", "")),
+                clean_text(row.get("Art", "")),
+                clean_text(row.get("Einheit", "")),
+                clean_text(row.get("Beschreibung", "")),
+                format_hours(row.get("Std.", 0)),
+            ))
+            self._item_ids.append(iid)
+
+        btns = ctk.CTkFrame(self, fg_color="transparent")
+        btns.grid(row=3, column=0, sticky="ew", padx=24, pady=(0, 20))
+        btns.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkButton(btns, text="Auswahl importieren", command=self._confirm,
+                      fg_color="#2FA572", hover_color="#278B60", width=200).grid(
+            row=0, column=0, padx=(0, 12))
+        ctk.CTkLabel(btns, text="Klick auf Zeile = auswählen/abwählen",
+                     text_color="#AAB2C0").grid(row=0, column=1, sticky="w")
+        ctk.CTkButton(btns, text="Alle hinzufügen", command=self._add_all,
+                      width=140).grid(row=0, column=2, padx=12)
+        ctk.CTkButton(btns, text="Alle überspringen", command=self._skip_all,
+                      fg_color="#555B66", hover_color="#464B54", width=140).grid(
+            row=0, column=3)
+
+    def _on_click(self, event):
+        row_id = self.tree.identify_row(event.y)
+        if not row_id or row_id not in self._item_ids:
+            return
+        idx = self._item_ids.index(row_id)
+        self.selected[idx] = not self.selected[idx]
+        values = list(self.tree.item(row_id, "values"))
+        values[0] = "☑" if self.selected[idx] else "☐"
+        self.tree.item(row_id, values=values)
+
+    def _toggle_all(self):
+        new_state = not any(self.selected)
+        for i, iid in enumerate(self._item_ids):
+            self.selected[i] = new_state
+            values = list(self.tree.item(iid, "values"))
+            values[0] = "☑" if new_state else "☐"
+            self.tree.item(iid, values=values)
+
+    def _confirm(self):
+        rows_to_add = [self.duplicates[i] for i, s in enumerate(self.selected) if s]
+        self.callback(rows_to_add)
+        self.destroy()
+
+    def _add_all(self):
+        self.callback(self.duplicates)
+        self.destroy()
+
+    def _skip_all(self):
+        self.callback([])
+        self.destroy()
+
 
 class PasteDialog(ctk.CTkToplevel):
     def __init__(self, parent, callback):
@@ -964,9 +1131,14 @@ class RktApp(ctk.CTk):
         self.calendar_figure = None
         self.hover_annotation = None
         self.hover_artists = []
+        self._project_file = None
+        self._dirty = False
+        self._rows_search_var = ctk.StringVar()
+        self._heatmap_year_var = ctk.StringVar()
 
         self.create_ui()
         self.setup_macos_menu()
+        self.bind_shortcuts()
         self.load_autosave()
 
         # Automatische Update-Prüfung kurz nach dem Start
@@ -1022,14 +1194,20 @@ class RktApp(ctk.CTk):
                 self.set_status("Auto-Speicher konnte nicht geladen werden")
 
     def bind_shortcuts(self):
-        self.bind_all("<Command-o>", lambda event: self.load_file())
-        self.bind_all("<Control-o>", lambda event: self.load_file())
-        self.bind_all("<Command-v>", lambda event: self.open_paste_dialog())
-        self.bind_all("<Control-v>", lambda event: self.open_paste_dialog())
-        self.bind_all("<Command-e>", lambda event: self.open_export_dialog())
-        self.bind_all("<Control-e>", lambda event: self.open_export_dialog())
-        self.bind_all("<Command-l>", lambda event: self.toggle_theme())
-        self.bind_all("<Control-l>", lambda event: self.toggle_theme())
+        self.bind_all("<Command-o>", lambda e: self.load_project())
+        self.bind_all("<Control-o>", lambda e: self.load_project())
+        self.bind_all("<Command-i>", lambda e: self.load_file())
+        self.bind_all("<Control-i>", lambda e: self.load_file())
+        self.bind_all("<Command-s>", lambda e: self.save_project())
+        self.bind_all("<Control-s>", lambda e: self.save_project())
+        self.bind_all("<Command-S>", lambda e: self.save_project_as())
+        self.bind_all("<Control-S>", lambda e: self.save_project_as())
+        self.bind_all("<Command-v>", lambda e: self.open_paste_dialog())
+        self.bind_all("<Control-v>", lambda e: self.open_paste_dialog())
+        self.bind_all("<Command-e>", lambda e: self.open_export_dialog())
+        self.bind_all("<Control-e>", lambda e: self.open_export_dialog())
+        self.bind_all("<Command-l>", lambda e: self.toggle_theme())
+        self.bind_all("<Control-l>", lambda e: self.toggle_theme())
 
     def create_ui(self):
         self.grid_columnconfigure(1, weight=1)
@@ -1037,42 +1215,46 @@ class RktApp(ctk.CTk):
 
         sidebar = ctk.CTkFrame(self, width=280, corner_radius=0)
         sidebar.grid(row=0, column=0, sticky="nsw")
-        sidebar.grid_rowconfigure(16, weight=1)
+        sidebar.grid_rowconfigure(18, weight=1)
 
         ctk.CTkLabel(sidebar, text="RK DienstLog", font=ctk.CTkFont(size=26, weight="bold")).grid(row=0, column=0, padx=24, pady=(28, 8), sticky="w")
-        ctk.CTkLabel(sidebar, text=APP_SUBTITLE, text_color="#AAB2C0").grid(row=1, column=0, padx=24, pady=(0, 24), sticky="w")
+        ctk.CTkLabel(sidebar, text=APP_SUBTITLE, text_color="#AAB2C0").grid(row=1, column=0, padx=24, pady=(0, 14), sticky="w")
 
-        ctk.CTkButton(sidebar, text="CSV / Excel laden", command=self.load_file, height=42).grid(row=2, column=0, padx=22, pady=7, sticky="ew")
-        ctk.CTkButton(sidebar, text="Copy/Paste öffnen", command=self.open_paste_dialog, height=42).grid(row=3, column=0, padx=22, pady=7, sticky="ew")
-        ctk.CTkButton(sidebar, text="Export", command=self.open_export_dialog, height=42, fg_color="#2FA572", hover_color="#278B60").grid(row=4, column=0, padx=22, pady=7, sticky="ew")
-        ctk.CTkButton(sidebar, text="Daten löschen", command=self.clear_data, height=42, fg_color="#555B66", hover_color="#464B54").grid(row=5, column=0, padx=22, pady=7, sticky="ew")
+        ctk.CTkButton(sidebar, text="Projekt öffnen  ⌘O", command=self.load_project, height=38).grid(row=2, column=0, padx=22, pady=(0, 4), sticky="ew")
+        ctk.CTkButton(sidebar, text="Speichern  ⌘S", command=self.save_project, height=38, fg_color="#2FA572", hover_color="#278B60").grid(row=3, column=0, padx=22, pady=4, sticky="ew")
 
-        ctk.CTkLabel(sidebar, text="Filter", font=ctk.CTkFont(size=16, weight="bold")).grid(row=6, column=0, padx=24, pady=(24, 8), sticky="w")
+        ctk.CTkLabel(sidebar, text="Importieren", text_color="#AAB2C0").grid(row=4, column=0, padx=24, pady=(10, 2), sticky="w")
+        ctk.CTkButton(sidebar, text="CSV / Excel laden", command=self.load_file, height=38).grid(row=5, column=0, padx=22, pady=4, sticky="ew")
+        ctk.CTkButton(sidebar, text="Copy/Paste öffnen", command=self.open_paste_dialog, height=38).grid(row=6, column=0, padx=22, pady=4, sticky="ew")
+        ctk.CTkButton(sidebar, text="Export", command=self.open_export_dialog, height=38).grid(row=7, column=0, padx=22, pady=4, sticky="ew")
+        ctk.CTkButton(sidebar, text="Daten löschen", command=self.clear_data, height=38, fg_color="#555B66", hover_color="#464B54").grid(row=8, column=0, padx=22, pady=(4, 2), sticky="ew")
 
-        ctk.CTkLabel(sidebar, text="Art", text_color="#AAB2C0").grid(row=7, column=0, padx=24, pady=(2, 2), sticky="w")
+        ctk.CTkLabel(sidebar, text="Filter", font=ctk.CTkFont(size=16, weight="bold")).grid(row=9, column=0, padx=24, pady=(16, 6), sticky="w")
+
+        ctk.CTkLabel(sidebar, text="Art", text_color="#AAB2C0").grid(row=10, column=0, padx=24, pady=(2, 2), sticky="w")
         self.filter_dropdown = ctk.CTkOptionMenu(sidebar, values=ART_OPTIONS, variable=self.filter_var, command=lambda _: self.refresh_views())
-        self.filter_dropdown.grid(row=8, column=0, padx=22, pady=(0, 8), sticky="ew")
+        self.filter_dropdown.grid(row=11, column=0, padx=22, pady=(0, 6), sticky="ew")
 
-        ctk.CTkLabel(sidebar, text="Jahr", text_color="#AAB2C0").grid(row=9, column=0, padx=24, pady=(2, 2), sticky="w")
+        ctk.CTkLabel(sidebar, text="Jahr", text_color="#AAB2C0").grid(row=12, column=0, padx=24, pady=(2, 2), sticky="w")
         self.year_dropdown = ctk.CTkOptionMenu(sidebar, values=["Alle"], variable=self.year_filter_var, command=lambda _: self.refresh_views())
-        self.year_dropdown.grid(row=10, column=0, padx=22, pady=(0, 8), sticky="ew")
+        self.year_dropdown.grid(row=13, column=0, padx=22, pady=(0, 6), sticky="ew")
 
-        ctk.CTkLabel(sidebar, text="Monat", text_color="#AAB2C0").grid(row=11, column=0, padx=24, pady=(2, 2), sticky="w")
+        ctk.CTkLabel(sidebar, text="Monat", text_color="#AAB2C0").grid(row=14, column=0, padx=24, pady=(2, 2), sticky="w")
         self.month_dropdown = ctk.CTkOptionMenu(sidebar, values=["Alle"], variable=self.month_filter_var, command=lambda _: self.refresh_views())
-        self.month_dropdown.grid(row=12, column=0, padx=22, pady=(0, 8), sticky="ew")
+        self.month_dropdown.grid(row=15, column=0, padx=22, pady=(0, 6), sticky="ew")
 
-        ctk.CTkLabel(sidebar, text="Zug / Einheit", text_color="#AAB2C0").grid(row=13, column=0, padx=24, pady=(2, 2), sticky="w")
+        ctk.CTkLabel(sidebar, text="Zug / Einheit", text_color="#AAB2C0").grid(row=16, column=0, padx=24, pady=(2, 2), sticky="w")
         self.unit_dropdown = ctk.CTkOptionMenu(sidebar, values=["Alle"], variable=self.unit_filter_var, command=lambda _: self.refresh_views())
-        self.unit_dropdown.grid(row=14, column=0, padx=22, pady=(0, 8), sticky="ew")
+        self.unit_dropdown.grid(row=17, column=0, padx=22, pady=(0, 6), sticky="ew")
 
-        ctk.CTkButton(sidebar, text="Filter zurücksetzen", command=self.reset_filters, height=36, fg_color="#3A3F47", hover_color="#4A505A").grid(row=15, column=0, padx=22, pady=(6, 14), sticky="ew")
+        ctk.CTkButton(sidebar, text="Filter zurücksetzen", command=self.reset_filters, height=34, fg_color="#3A3F47", hover_color="#4A505A").grid(row=18, column=0, padx=22, pady=(4, 10), sticky="ew")
 
-        ctk.CTkLabel(sidebar, text="Darstellung", text_color="#AAB2C0").grid(row=16, column=0, padx=24, pady=(4, 2), sticky="w")
+        ctk.CTkLabel(sidebar, text="Darstellung", text_color="#AAB2C0").grid(row=19, column=0, padx=24, pady=(4, 2), sticky="w")
         self.theme_switch = ctk.CTkSegmentedButton(sidebar, values=["Dark", "Light"], variable=self.theme_var, command=self.change_theme)
-        self.theme_switch.grid(row=17, column=0, padx=22, pady=(0, 8), sticky="ew")
+        self.theme_switch.grid(row=20, column=0, padx=22, pady=(0, 8), sticky="ew")
 
         self.source_label = ctk.CTkLabel(sidebar, text=self.source_name, text_color="#AAB2C0", wraplength=230, justify="left")
-        self.source_label.grid(row=18, column=0, padx=24, pady=(14, 28), sticky="sw")
+        self.source_label.grid(row=21, column=0, padx=24, pady=(10, 28), sticky="sw")
 
         main = ctk.CTkFrame(self, fg_color="transparent")
         main.grid(row=0, column=1, sticky="nsew", padx=24, pady=24)
@@ -1104,10 +1286,16 @@ class RktApp(ctk.CTk):
         self.tab_month = self.tabs.add("Monatsübersicht")
         self.tab_unit = self.tabs.add("Zug / Einheit")
         self.tab_rows = self.tabs.add("Datensätze")
+        self.tab_analytics = self.tabs.add("Analytics")
 
-        for tab in [self.tab_summary, self.tab_chart, self.tab_calendar, self.tab_month, self.tab_unit, self.tab_rows]:
+        for tab in [self.tab_summary, self.tab_chart, self.tab_calendar,
+                    self.tab_month, self.tab_unit, self.tab_analytics]:
             tab.grid_columnconfigure(0, weight=1)
             tab.grid_rowconfigure(0, weight=1)
+
+        # Datensätze tab: row 0 = search bar, row 1 = tree
+        self.tab_rows.grid_columnconfigure(0, weight=1)
+        self.tab_rows.grid_rowconfigure(1, weight=1)
 
         self.summary_box = ctk.CTkTextbox(self.tab_summary, font=("Consolas", 13))
         self.summary_box.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
@@ -1139,7 +1327,27 @@ class RktApp(ctk.CTk):
 
         self.month_tree = self.create_tree(self.tab_month, ["Monat", "Dienste", "Stunden"])
         self.unit_tree = self.create_tree(self.tab_unit, ["Einheit", "Dienste", "Stunden"])
-        self.rows_tree = self.create_tree(self.tab_rows, ["#", "Datum", "Art", "Einheit", "Std."])
+
+        # Datensätze tab: search bar + tree with Beschreibung column
+        search_bar = ctk.CTkFrame(self.tab_rows, fg_color="transparent")
+        search_bar.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 0))
+        search_bar.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(search_bar, text="Suche:", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, padx=(0, 8))
+        ctk.CTkEntry(search_bar, textvariable=self._rows_search_var,
+                     placeholder_text="Filtern nach Datum, Art, Einheit, Beschreibung …").grid(
+            row=0, column=1, sticky="ew")
+        ctk.CTkButton(search_bar, text="✕", width=32, height=28,
+                      command=lambda: self._rows_search_var.set("")).grid(row=0, column=2, padx=(6, 0))
+        self._rows_search_var.trace_add("write", lambda *_: self._on_rows_search())
+
+        self.rows_tree = self.create_tree(
+            self.tab_rows,
+            ["#", "Datum", "Art", "Einheit", "Beschreibung", "Std."],
+            row=1
+        )
+        self.rows_tree.bind("<Double-1>", self.on_row_double_click)
+        self.rows_tree.bind("<Button-2>", self.on_row_right_click)
+        self.rows_tree.bind("<Button-3>", self.on_row_right_click)
 
         self.month_tree.bind("<Double-1>", self.on_month_double_click)
         self.unit_tree.bind("<Double-1>", self.on_unit_double_click)
@@ -1160,9 +1368,9 @@ class RktApp(ctk.CTk):
         card.value_label = value_label
         return card
 
-    def create_tree(self, parent, columns):
+    def create_tree(self, parent, columns, row=0):
         wrapper = ctk.CTkFrame(parent, fg_color="transparent")
-        wrapper.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        wrapper.grid(row=row, column=0, sticky="nsew", padx=8, pady=8)
         wrapper.grid_columnconfigure(0, weight=1)
         wrapper.grid_rowconfigure(0, weight=1)
 
@@ -1186,6 +1394,12 @@ class RktApp(ctk.CTk):
                 tree.column(col, width=60, anchor="center")
             elif col == "Datum":
                 tree.column(col, width=120, anchor="center")
+            elif col == "Beschreibung":
+                tree.column(col, width=380, anchor="w")
+            elif col == "Art":
+                tree.column(col, width=180, anchor="w")
+            elif col == "Einheit":
+                tree.column(col, width=200, anchor="w")
             else:
                 tree.column(col, width=300, anchor="w")
 
@@ -1205,8 +1419,12 @@ class RktApp(ctk.CTk):
             menubar = tk.Menu(self)
 
             file_menu = tk.Menu(menubar, tearoff=0)
-            file_menu.add_command(label="CSV / Excel laden", command=self.load_file)
-            file_menu.add_command(label="Copy/Paste öffnen", command=self.open_paste_dialog)
+            file_menu.add_command(label="Projekt öffnen…  ⌘O", command=self.load_project)
+            file_menu.add_command(label="Speichern  ⌘S", command=self.save_project)
+            file_menu.add_command(label="Speichern unter…  ⌘⇧S", command=self.save_project_as)
+            file_menu.add_separator()
+            file_menu.add_command(label="CSV / Excel importieren  ⌘I", command=self.load_file)
+            file_menu.add_command(label="Copy/Paste öffnen  ⌘V", command=self.open_paste_dialog)
             file_menu.add_separator()
             file_menu.add_command(label="Export", command=self.open_export_dialog)
             file_menu.add_separator()
@@ -1463,7 +1681,7 @@ class RktApp(ctk.CTk):
 
         dialog_text = (
             "Es sind bereits Daten geladen.\n\n"
-            "Ja = bestehende Daten erweitern und Dubletten überspringen\n"
+            "Ja = bestehende Daten erweitern (Dubletten prüfen)\n"
             "Nein = bestehende Daten löschen und durch neuen Import ersetzen\n"
             "Abbrechen = nichts importieren"
         )
@@ -1478,13 +1696,33 @@ class RktApp(ctk.CTk):
             self.set_data(df, source_name)
             return
 
-        merged, added, skipped = merge_without_duplicates(self.df_all, df)
-        self.set_data(merged, f"{self.source_name.splitlines()[1] if 'Quelle:' in self.source_name else 'Bestehende Daten'} + {source_name}")
-        self.set_status(f"Import erweitert: {added} neu, {skipped} doppelt übersprungen")
-        messagebox.showinfo(
-            "Import erweitert",
-            f"Neue Einträge: {added}\nDoppelte übersprungen: {skipped}\nGesamt: {len(merged)}"
-        )
+        # Find unique vs duplicate rows
+        unique_rows, duplicate_rows = find_import_diff(self.df_all, df)
+
+        def finish_import(extra_rows: list):
+            all_new_rows = unique_rows + extra_rows
+            if all_new_rows:
+                add_df = pd.DataFrame(all_new_rows)
+                merged = pd.concat([self.df_all, add_df], ignore_index=True)
+                if "#" in merged.columns:
+                    merged["#"] = range(1, len(merged) + 1)
+            else:
+                merged = self.df_all.copy()
+            existing_src = self.source_name.splitlines()[1] if "Quelle:" in self.source_name else "Bestehende Daten"
+            self.set_data(merged, f"{existing_src} + {source_name}")
+            added = len(unique_rows) + len(extra_rows)
+            skipped = len(duplicate_rows) - len(extra_rows)
+            self.set_status(f"Import: {added} neu, {skipped} übersprungen")
+            if added or skipped:
+                messagebox.showinfo(
+                    "Import abgeschlossen",
+                    f"Neue Einträge: {added}\nÜbersprungen: {skipped}\nGesamt: {len(merged)}"
+                )
+
+        if duplicate_rows:
+            DuplicateReviewDialog(self, duplicate_rows, finish_import)
+        else:
+            finish_import([])
 
     def set_data(self, df: pd.DataFrame, source_name: str):
         self.df_all = df.copy()
@@ -1495,6 +1733,8 @@ class RktApp(ctk.CTk):
         self.refresh_views()
         self.autosave_data()
         self.save_settings()
+        self._dirty = True
+        self.update_title_bar()
         self.set_status(f"Daten übernommen: {len(self.df_all)} Datensätze")
 
     def clear_data(self):
@@ -1664,18 +1904,24 @@ class RktApp(ctk.CTk):
                 self.unit_tree.insert("", "end", values=(str(unit), int(row["Eintraege"]), format_hours(row["Stunden"])))
 
         self.clear_tree(self.rows_tree)
+        search_term = self._rows_search_var.get().strip().lower()
         if not df.empty:
-            for _, row in df.iterrows():
-                self.rows_tree.insert("", "end", values=(
+            for idx, row in df.iterrows():
+                vals = (
                     clean_text(row.get("#", "")),
                     clean_text(row.get("Datum", "")),
                     clean_text(row.get("Art", "")),
                     clean_text(row.get("Einheit", "")),
+                    clean_text(row.get("Beschreibung", "")),
                     format_hours(row.get("Std.", 0))
-                ))
+                )
+                if search_term and not any(search_term in str(v).lower() for v in vals):
+                    continue
+                self.rows_tree.insert("", "end", iid=f"row_{idx}", values=vals)
 
         self.refresh_chart()
         self.refresh_calendar()
+        self.refresh_analytics()
         self.save_settings()
 
     def get_monthly_summary(self, df):
@@ -2435,7 +2681,555 @@ exit 0
             self.set_status("Export abgeschlossen")
             messagebox.showinfo("Export fertig", "Gespeichert:\n" + "\n".join(saved_files))
 
+    # ── Project Save / Load ────────────────────────────────────────────────
+
+    def update_title_bar(self):
+        if self._project_file:
+            name = Path(self._project_file).stem
+            marker = " •" if self._dirty else ""
+            self.title(f"{APP_TITLE} – {name}{marker}")
+        else:
+            marker = " •" if self._dirty else ""
+            self.title(f"{APP_TITLE}{marker}")
+
+    def save_project(self):
+        if not self._project_file:
+            self.save_project_as()
+            return
+        try:
+            state = {
+                "filter_art": self.filter_var.get(),
+                "filter_year": self.year_filter_var.get(),
+                "filter_month": self.month_filter_var.get(),
+                "filter_unit": self.unit_filter_var.get(),
+                "theme": self.theme_var.get(),
+                "chart_mode": self.current_chart_mode,
+                "source_name": self.source_name,
+            }
+            save_project_file(Path(self._project_file), self.df_all, state)
+            self._dirty = False
+            self.update_title_bar()
+            self.set_status(f"Gespeichert: {Path(self._project_file).name}")
+        except Exception as e:
+            messagebox.showerror("Fehler beim Speichern", str(e))
+
+    def save_project_as(self):
+        file = filedialog.asksaveasfilename(
+            title="Projekt speichern",
+            defaultextension=".rkdienstlog",
+            filetypes=[("RK DienstLog Projektdatei", "*.rkdienstlog"), ("Alle Dateien", "*.*")]
+        )
+        if not file:
+            return
+        self._project_file = file
+        self.save_project()
+
+    def load_project(self):
+        if self._dirty and not self.df_all.empty:
+            answer = messagebox.askyesnocancel(
+                "Ungespeicherte Änderungen",
+                "Ungespeicherte Änderungen gehen verloren. Jetzt speichern?"
+            )
+            if answer is None:
+                return
+            if answer:
+                self.save_project()
+
+        file = filedialog.askopenfilename(
+            title="Projekt öffnen",
+            filetypes=[("RK DienstLog Projektdatei", "*.rkdienstlog"), ("Alle Dateien", "*.*")]
+        )
+        if not file:
+            return
+        try:
+            result = load_project_file(Path(file))
+            df = result["df"]
+            state = result.get("state", {})
+
+            self._project_file = file
+            self.df_all = df
+            self.df_all["Std."] = self.df_all["Std."].apply(clean_hours)
+            self.source_name = state.get("source_name", f"Quelle:\n{Path(file).name}\n\nDatensätze:\n{len(df)}")
+            self.source_label.configure(text=self.source_name)
+
+            if state.get("theme"):
+                self.theme_var.set(state["theme"])
+                ctk.set_appearance_mode(state["theme"].lower())
+            if state.get("chart_mode"):
+                self.current_chart_mode = state["chart_mode"]
+                self.chart_mode.set(self.current_chart_mode)
+
+            self.update_filter_options()
+
+            if state.get("filter_art") and state["filter_art"] in ART_OPTIONS:
+                self.filter_var.set(state["filter_art"])
+            if state.get("filter_year"):
+                self.year_filter_var.set(state["filter_year"])
+            if state.get("filter_month"):
+                self.month_filter_var.set(state["filter_month"])
+            if state.get("filter_unit"):
+                self.unit_filter_var.set(state["filter_unit"])
+
+            self.refresh_views()
+            self.autosave_data()
+            self._dirty = False
+            self.update_title_bar()
+            self.set_status(f"Projekt geladen: {Path(file).name}")
+        except Exception as e:
+            messagebox.showerror("Fehler beim Öffnen", str(e))
+
+    # ── Datensätze Tab: Search + Inline Edit + Right-click ─────────────────
+
+    def _on_rows_search(self):
+        self.clear_tree(self.rows_tree)
+        df = self.get_filtered_df()
+        search_term = self._rows_search_var.get().strip().lower()
+        for idx, row in df.iterrows():
+            vals = (
+                clean_text(row.get("#", "")),
+                clean_text(row.get("Datum", "")),
+                clean_text(row.get("Art", "")),
+                clean_text(row.get("Einheit", "")),
+                clean_text(row.get("Beschreibung", "")),
+                format_hours(row.get("Std.", 0))
+            )
+            if search_term and not any(search_term in str(v).lower() for v in vals):
+                continue
+            self.rows_tree.insert("", "end", iid=f"row_{idx}", values=vals)
+
+    def on_row_right_click(self, event):
+        row_id = self.rows_tree.identify_row(event.y)
+        if not row_id:
+            return
+        self.rows_tree.selection_set(row_id)
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Zeile löschen", command=self.delete_selected_rows)
+        menu.add_command(label="Zeile bearbeiten", command=lambda: self._edit_selected_row())
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def delete_selected_rows(self):
+        selected = self.rows_tree.selection()
+        if not selected:
+            return
+        if not messagebox.askyesno("Zeile löschen",
+                                   f"{len(selected)} Zeile(n) wirklich löschen?"):
+            return
+        for iid in selected:
+            try:
+                idx = int(iid.replace("row_", ""))
+                self.df_all = self.df_all.drop(index=idx)
+            except Exception:
+                pass
+        self.df_all = self.df_all.reset_index(drop=True)
+        if "#" in self.df_all.columns:
+            self.df_all["#"] = range(1, len(self.df_all) + 1)
+        self._dirty = True
+        self.update_title_bar()
+        self.update_filter_options()
+        self.refresh_views()
+        self.autosave_data()
+        self.set_status(f"{len(selected)} Zeile(n) gelöscht")
+
+    def on_row_double_click(self, event):
+        region = self.rows_tree.identify_region(event.x, event.y)
+        if region != "cell":
+            return
+        item = self.rows_tree.identify_row(event.y)
+        col_id = self.rows_tree.identify_column(event.x)
+        if not item or not col_id:
+            return
+        col_idx = int(col_id[1:]) - 1
+        columns = ["#", "Datum", "Art", "Einheit", "Beschreibung", "Std."]
+        if col_idx >= len(columns):
+            return
+        col_name = columns[col_idx]
+        if col_name in ("#", "*"):
+            return
+        bbox = self.rows_tree.bbox(item, col_id)
+        if not bbox:
+            return
+        x, y, width, height = bbox
+        current_value = self.rows_tree.set(item, col_name)
+        entry_var = tk.StringVar(value=current_value)
+        entry = ttk.Entry(self.rows_tree, textvariable=entry_var)
+        entry.place(x=x, y=y, width=width, height=height)
+        entry.focus_set()
+        entry.select_range(0, "end")
+
+        def save_edit(event=None):
+            new_value = entry_var.get()
+            entry.destroy()
+            self._apply_cell_edit(item, col_name, new_value)
+
+        def cancel_edit(event=None):
+            entry.destroy()
+
+        entry.bind("<Return>", save_edit)
+        entry.bind("<Tab>", save_edit)
+        entry.bind("<Escape>", cancel_edit)
+        entry.bind("<FocusOut>", save_edit)
+
+    def _apply_cell_edit(self, item, col_name, new_value):
+        try:
+            idx = int(item.replace("row_", ""))
+        except Exception:
+            return
+        if idx not in self.df_all.index:
+            return
+        if col_name == "Std.":
+            try:
+                value = float(new_value.replace(",", "."))
+            except ValueError:
+                messagebox.showwarning("Ungültige Eingabe", "Stunden müssen eine Zahl sein.")
+                return
+            self.df_all.loc[idx, col_name] = value
+        elif col_name == "Datum":
+            try:
+                pd.to_datetime(new_value, dayfirst=True)
+            except Exception:
+                messagebox.showwarning("Ungültiges Datum",
+                                       "Format: TT.MM.JJJJ")
+                return
+            self.df_all.loc[idx, col_name] = new_value
+        else:
+            self.df_all.loc[idx, col_name] = new_value
+        self._dirty = True
+        self.update_title_bar()
+        self.update_filter_options()
+        self.refresh_views()
+        self.autosave_data()
+
+    def _edit_selected_row(self):
+        selected = self.rows_tree.selection()
+        if not selected:
+            return
+        item = selected[0]
+        try:
+            idx = int(item.replace("row_", ""))
+        except Exception:
+            return
+        if idx not in self.df_all.index:
+            return
+        row = self.df_all.loc[idx]
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Zeile bearbeiten")
+        dialog.geometry("500x360")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+        dialog.grid_columnconfigure(1, weight=1)
+
+        fields = ["Datum", "Art", "Einheit", "Beschreibung", "Std."]
+        vars_ = {}
+        for i, field in enumerate(fields):
+            ctk.CTkLabel(dialog, text=field + ":").grid(row=i, column=0, padx=16, pady=8, sticky="e")
+            var = tk.StringVar(value=str(row.get(field, "")))
+            vars_[field] = var
+            if field == "Art":
+                ctk.CTkOptionMenu(dialog, values=[o for o in ART_OPTIONS if o != "Alle"],
+                                  variable=var).grid(row=i, column=1, padx=16, pady=8, sticky="ew")
+            else:
+                ctk.CTkEntry(dialog, textvariable=var).grid(row=i, column=1, padx=16, pady=8, sticky="ew")
+
+        def apply():
+            for field, var in vars_.items():
+                val = var.get()
+                if field == "Std.":
+                    try:
+                        val = float(val.replace(",", "."))
+                    except ValueError:
+                        messagebox.showwarning("Ungültig", "Stunden = Zahl")
+                        return
+                self.df_all.loc[idx, field] = val
+            self._dirty = True
+            self.update_title_bar()
+            self.update_filter_options()
+            self.refresh_views()
+            self.autosave_data()
+            dialog.destroy()
+
+        btns = ctk.CTkFrame(dialog, fg_color="transparent")
+        btns.grid(row=len(fields), column=0, columnspan=2, pady=(12, 16))
+        ctk.CTkButton(btns, text="Speichern", command=apply, fg_color="#2FA572", hover_color="#278B60").pack(side="left", padx=8)
+        ctk.CTkButton(btns, text="Abbrechen", command=dialog.destroy, fg_color="#555B66", hover_color="#464B54").pack(side="left", padx=8)
+
+    # ── Analytics Tab ──────────────────────────────────────────────────────
+
+    def refresh_analytics(self):
+        tab = self.tab_analytics
+        for w in tab.winfo_children():
+            w.destroy()
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_rowconfigure(1, weight=1)
+
+        df = self.df_all.copy()
+
+        # ── KPI Cards ──
+        kpi_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        kpi_frame.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
+        for i in range(5):
+            kpi_frame.grid_columnconfigure(i, weight=1)
+
+        total_hours = float(df["Std."].sum()) if not df.empty else 0.0
+        total_count = len(df)
+
+        df_d = df.copy()
+        if not df_d.empty:
+            df_d["_date"] = pd.to_datetime(df_d["Datum"], dayfirst=True, errors="coerce")
+
+        best_year = "-"
+        best_month = "-"
+        avg_month = 0.0
+        if not df_d.empty and "_date" in df_d.columns:
+            valid = df_d.dropna(subset=["_date"])
+            if not valid.empty:
+                by_year = valid.groupby(valid["_date"].dt.year)["Std."].sum()
+                if not by_year.empty:
+                    best_year = str(int(by_year.idxmax()))
+                by_month = valid.groupby(valid["_date"].dt.strftime("%Y-%m"))["Std."].sum()
+                if not by_month.empty:
+                    best_month = format_month_display(by_month.idxmax())
+                n_months = valid["_date"].dt.strftime("%Y-%m").nunique()
+                if n_months > 0:
+                    avg_month = total_hours / n_months
+
+        kpis = [
+            ("Gesamtstunden", f"{format_hours(total_hours)} h"),
+            ("Dienste gesamt", str(total_count)),
+            ("Aktivstes Jahr", best_year),
+            ("Bester Monat", best_month),
+            ("Ø Stunden/Monat", f"{format_hours(avg_month)} h"),
+        ]
+        for i, (label, value) in enumerate(kpis):
+            card = self.create_stat_card(kpi_frame, label, value)
+            card.grid(row=0, column=i, padx=6, sticky="ew")
+
+        # ── Bottom: Jahresvergleich left + Heatmap right ──
+        bottom = ctk.CTkFrame(tab, fg_color="transparent")
+        bottom.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        bottom.grid_columnconfigure(0, weight=3)
+        bottom.grid_columnconfigure(1, weight=2)
+        bottom.grid_rowconfigure(0, weight=1)
+
+        # Jahresvergleich
+        left = ctk.CTkFrame(bottom)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        left.grid_columnconfigure(0, weight=1)
+        left.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(left, text="Jahresvergleich (Stunden pro Monat)",
+                     font=ctk.CTkFont(size=13, weight="bold")).grid(
+            row=0, column=0, sticky="w", padx=12, pady=(10, 4))
+        fig_cmp = self._make_year_comparison_figure(df)
+        canvas_cmp = FigureCanvasTkAgg(fig_cmp, master=left)
+        canvas_cmp.draw()
+        canvas_cmp.get_tk_widget().grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+
+        # Heatmap
+        right = ctk.CTkFrame(bottom)
+        right.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        right.grid_columnconfigure(0, weight=1)
+        right.grid_rowconfigure(2, weight=1)
+        ctk.CTkLabel(right, text="Aktivität (GitHub-Heatmap)",
+                     font=ctk.CTkFont(size=13, weight="bold")).grid(
+            row=0, column=0, sticky="w", padx=12, pady=(10, 4))
+
+        available_years = []
+        if not df.empty:
+            tmp_d = pd.to_datetime(df["Datum"], dayfirst=True, errors="coerce").dropna()
+            available_years = sorted(tmp_d.dt.year.unique().tolist(), reverse=True)
+
+        if available_years:
+            current_hm_year = self._heatmap_year_var.get()
+            if not current_hm_year or int(current_hm_year) not in available_years:
+                self._heatmap_year_var.set(str(available_years[0]))
+
+            if len(available_years) > 1:
+                ctk.CTkSegmentedButton(
+                    right,
+                    values=[str(y) for y in available_years[:6]],
+                    variable=self._heatmap_year_var,
+                    command=lambda _: self._redraw_heatmap(right, df, available_years)
+                ).grid(row=1, column=0, sticky="w", padx=12, pady=(0, 6))
+
+        self._heatmap_canvas_frame = ctk.CTkFrame(right, fg_color="transparent")
+        self._heatmap_canvas_frame.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        self._heatmap_canvas_frame.grid_columnconfigure(0, weight=1)
+        self._heatmap_canvas_frame.grid_rowconfigure(0, weight=1)
+
+        if available_years:
+            self._draw_heatmap_to_frame(self._heatmap_canvas_frame, df, available_years[0])
+        else:
+            ctk.CTkLabel(self._heatmap_canvas_frame,
+                         text="Keine Daten für Heatmap",
+                         text_color="#AAB2C0").grid(row=0, column=0)
+
+    def _redraw_heatmap(self, parent_frame, df, available_years):
+        for w in self._heatmap_canvas_frame.winfo_children():
+            w.destroy()
+        try:
+            year = int(self._heatmap_year_var.get())
+        except Exception:
+            year = available_years[0] if available_years else None
+        if year:
+            self._draw_heatmap_to_frame(self._heatmap_canvas_frame, df, year)
+
+    def _draw_heatmap_to_frame(self, frame, df, year: int):
+        fig = self._make_yearly_heatmap_figure(df, year)
+        canvas = FigureCanvasTkAgg(fig, master=frame)
+        canvas.draw()
+        canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+    def _make_year_comparison_figure(self, df):
+        is_dark = self.theme_var.get().lower() == "dark"
+        bg = "#1E1F22" if is_dark else "#FFFFFF"
+        fg = "#E8EAED" if is_dark else "#111111"
+        grid_c = "#44474F" if is_dark else "#DADCE0"
+
+        fig = Figure(figsize=(7, 4), dpi=96)
+        ax = fig.add_subplot(111)
+        fig.patch.set_facecolor(bg)
+        ax.set_facecolor(bg)
+        ax.tick_params(colors=fg)
+        ax.xaxis.label.set_color(fg)
+        ax.yaxis.label.set_color(fg)
+        ax.title.set_color(fg)
+        for spine in ax.spines.values():
+            spine.set_color(grid_c)
+
+        if df.empty:
+            ax.text(0.5, 0.5, "Keine Daten", ha="center", va="center", color=fg, fontsize=13)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            fig.tight_layout()
+            return fig
+
+        tmp = df.copy()
+        tmp["_date"] = pd.to_datetime(tmp["Datum"], dayfirst=True, errors="coerce")
+        tmp = tmp.dropna(subset=["_date"])
+        if tmp.empty:
+            ax.text(0.5, 0.5, "Keine Datumswerte", ha="center", va="center", color=fg, fontsize=13)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            fig.tight_layout()
+            return fig
+
+        tmp["_year"] = tmp["_date"].dt.year
+        tmp["_month"] = tmp["_date"].dt.month
+        years = sorted(tmp["_year"].unique())
+        month_labels = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
+                        "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
+        n_years = len(years)
+        bar_width = 0.8 / max(n_years, 1)
+        colors = ["#1F6AA5", "#2FA572", "#FFC107", "#F44336", "#9C27B0", "#FF9800"]
+
+        for i, year in enumerate(years):
+            y_df = tmp[tmp["_year"] == year]
+            monthly = y_df.groupby("_month")["Std."].sum().reindex(range(1, 13), fill_value=0)
+            x = [m - 1 + (i - n_years / 2 + 0.5) * bar_width for m in range(1, 13)]
+            ax.bar(x, monthly.values, width=bar_width * 0.9,
+                   color=colors[i % len(colors)], label=str(year), alpha=0.85)
+
+        ax.set_xticks(range(12))
+        ax.set_xticklabels(month_labels, color=fg, fontsize=9)
+        ax.set_ylabel("Stunden", color=fg)
+        ax.grid(True, axis="y", color=grid_c, alpha=0.4)
+        if n_years > 1:
+            legend = ax.legend(fontsize=9, framealpha=0.7)
+            for text in legend.get_texts():
+                text.set_color(fg)
+            legend.get_frame().set_facecolor(bg)
+        fig.tight_layout()
+        return fig
+
+    def _make_yearly_heatmap_figure(self, df, year: int):
+        from datetime import date as date_type
+        import calendar as cal_mod
+
+        is_dark = self.theme_var.get().lower() == "dark"
+        bg = "#1E1F22" if is_dark else "#FFFFFF"
+        fg = "#E8EAED" if is_dark else "#111111"
+        empty_c = "#2B2D31" if is_dark else "#EBEDF0"
+
+        fig = Figure(figsize=(6.5, 2.2), dpi=96)
+        ax = fig.add_subplot(111)
+        fig.patch.set_facecolor(bg)
+        ax.set_facecolor(bg)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+        # Build daily map for the year
+        daily_map = {}
+        if not df.empty:
+            tmp = df.copy()
+            tmp["_date"] = pd.to_datetime(tmp["Datum"], dayfirst=True, errors="coerce")
+            tmp = tmp.dropna(subset=["_date"])
+            tmp = tmp[tmp["_date"].dt.year == year]
+            if not tmp.empty:
+                for dt, grp in tmp.groupby(tmp["_date"].dt.date):
+                    daily_map[dt] = float(grp["Std."].sum())
+
+        max_h = max(daily_map.values()) if daily_map else 1.0
+
+        def cell_color(h):
+            if h <= 0:
+                return empty_c
+            ratio = min(h / max_h, 1.0)
+            if ratio < 0.25:
+                return "#196127"
+            if ratio < 0.5:
+                return "#239a3b"
+            if ratio < 0.75:
+                return "#7bc96f"
+            return "#c6e48b"
+
+        # 52 weeks × 7 days grid
+        jan1 = date_type(year, 1, 1)
+        # Align to Monday
+        start = jan1 - timedelta(days=jan1.weekday())
+        weeks = 53
+        ax.set_xlim(-0.5, weeks - 0.5)
+        ax.set_ylim(-0.5, 6.5)
+        ax.invert_yaxis()
+
+        month_ticks = {}
+        for w in range(weeks):
+            for d in range(7):
+                day = start + timedelta(days=w * 7 + d)
+                if day.year != year:
+                    color = bg
+                else:
+                    color = cell_color(daily_map.get(day, 0.0))
+                    if day.day == 1:
+                        month_ticks[w] = day.strftime("%b")
+                rect = matplotlib.patches.Rectangle(
+                    (w - 0.45, d - 0.45), 0.9, 0.9,
+                    facecolor=color, edgecolor=bg, linewidth=0.5
+                )
+                ax.add_patch(rect)
+
+        ax.set_xticks(list(month_ticks.keys()))
+        ax.set_xticklabels(list(month_ticks.values()), color=fg, fontsize=8)
+        ax.set_yticks(range(7))
+        ax.set_yticklabels(["Mo", "", "Mi", "", "Fr", "", "So"], color=fg, fontsize=8)
+        ax.tick_params(length=0)
+        ax.set_title(f"Aktivität {year}", color=fg, fontsize=10, pad=6)
+        fig.tight_layout(pad=0.4)
+        return fig
+
     def on_close(self):
+        if self._dirty and not self.df_all.empty:
+            answer = messagebox.askyesnocancel(
+                "Ungespeicherte Änderungen",
+                "Es gibt ungespeicherte Änderungen.\n\nJetzt speichern?"
+            )
+            if answer is None:
+                return
+            if answer:
+                self.save_project()
         self.autosave_data()
         self.save_settings()
         self.destroy()
