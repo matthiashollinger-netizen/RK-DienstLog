@@ -101,6 +101,12 @@ def _validate_download_url(url: str) -> str:
 
 CHANGELOG_TEXT = """RK DienstLog – Changelog
 
+Version 3.0.1
+- Gesamtstunden-Karte: Toggle für Gesamt / Ø pro Tag / Woche / Monat / Jahr.
+- Security: SSL-Zertifikatsvalidierung immer aktiv (kein None-Fallback mehr).
+- Security: online_version aus Update-JSON wird auf gültiges Semver geprüft (Path-Traversal-Fix).
+- Security: Download-URLs müssen von github.com/matthiashollinger-netizen kommen (URL-Allowlist).
+
 Version 3.0.0
 - Neues Feature: Projekt speichern/laden (.rkdienstlog Format – speichert alle Daten, Filter und Theme).
 - Speichern (⌘S / Strg+S), Speichern unter (⌘⇧S), Projekt öffnen (⌘O).
