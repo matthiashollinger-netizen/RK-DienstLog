@@ -1,10 +1,12 @@
 {
-  "version": "2.9.1",
-  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.9.1/RK_DienstLog_2.9.1_mac.zip",
-  "windows_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.9.1/RK_DienstLog_Setup_2.9.1.exe",
+  "version": "2.9.2",
+  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.9.2/RK_DienstLog_2.9.2_mac.zip",
+  "windows_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v2.9.2/RK_DienstLog_Setup_2.9.2.exe",
   "changelog": [
-    "Dubletten-Erkennung beim erweiterten Import verbessert",
-    "Doppelte Einträge werden robuster über Datum, Art, Einheit und Stunden erkannt",
-    "Monatsfilter zeigt bei ausgewähltem Jahr nur Monate mit vorhandenen Diensten an"
+    "Phase 1 gestartet",
+    "Save & Load vorbereitet",
+    ".rkdienstlog Konzept ergänzt",
+    "robuste Dubletten-Erkennung vorbereitet",
+    "UX Verbesserungen vorbereitet"
   ]
 }
