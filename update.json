@@ -1,12 +1,10 @@
 {
-  "version": "3.0.4",
-  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v3.0.4/RK_DienstLog_3.0.4_mac.zip",
-  "windows_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v3.0.4/RK_DienstLog_Setup_3.0.4.exe",
+  "version": "3.0.5",
+  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v3.0.5/RK_DienstLog_3.0.5_mac.zip",
+  "windows_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v3.0.5/RK_DienstLog_Setup_3.0.5.exe",
   "changelog": [
-    "Code-Audit: 16 bestätigte Bugs behoben",
-    "Dubletten-Erkennung & Import-Dedup repariert",
-    "Monats-Drilldown, Inline-Datum-Edit und Copy/Paste-Übernahme gefixt",
-    "Heatmap: alle Jahre auswählbar; Excel-Datumsserien korrekt",
-    "Robustheit & CI/CD-Verbesserungen"
+    "Neu: + Neuer Dienst-Button – einzelne Dienste manuell erfassen (⌘N)",
+    "Neu: rollende Backups + crash-sichere (atomare) Speicherung",
+    "Repo aufgeräumt"
   ]
 }

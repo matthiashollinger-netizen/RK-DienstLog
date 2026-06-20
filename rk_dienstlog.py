@@ -101,6 +101,12 @@ def _validate_download_url(url: str) -> str:
 
 CHANGELOG_TEXT = """RK DienstLog – Changelog
 
+Version 3.0.5
+- Neu: "+ Neuer Dienst"-Button (Datensätze-Tab, Menü Datei, ⌘N) – einzelne Dienste manuell erfassen.
+- Neu: Rollende Backups – beim Speichern, Löschen und Autosave werden die letzten 5 Stände
+  unter ~/.rk_dienstlog/backups gesichert; alle Schreibvorgänge laufen jetzt atomar (crash-sicher).
+- Aufgeräumt: alte Programmversionen und Streudateien aus dem Repo entfernt.
+
 Version 3.0.4
 - Großer Code-Audit: 16 bestätigte Bugs behoben.
 - Dubletten-Erkennung: Whitespace-Normalisierung repariert (Mehrfach-Leerzeichen kollabieren jetzt korrekt).
@@ -245,6 +251,7 @@ APP_DIR = Path.home() / ".rk_dienstlog"
 APP_DIR.mkdir(exist_ok=True)
 SETTINGS_FILE = APP_DIR / "settings.json"
 AUTOSAVE_FILE = APP_DIR / "autosave.csv"
+BACKUP_DIR = APP_DIR / "backups"
 
 ART_OPTIONS = [
     "RKT-FRW",
@@ -555,7 +562,11 @@ def save_project_file(path: Path, df: pd.DataFrame, state: dict):
         "state": state,
         "records": df.to_dict(orient="records")
     }
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    # Atomar schreiben: erst in temp, dann umbenennen – ein Crash mitten im Schreiben
+    # kann die bestehende Datei nicht mehr beschädigen.
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def load_project_file(path: Path) -> dict:
@@ -1184,7 +1195,23 @@ class RktApp(ctk.CTk):
                 if AUTOSAVE_FILE.exists():
                     AUTOSAVE_FILE.unlink()
             else:
-                self.df_all.to_csv(AUTOSAVE_FILE, index=False, sep=";")
+                tmp = AUTOSAVE_FILE.with_suffix(".csv.tmp")
+                self.df_all.to_csv(tmp, index=False, sep=";")
+                os.replace(tmp, AUTOSAVE_FILE)
+        except Exception:
+            pass
+
+    def _rotate_backup(self, src: Path, keep=5):
+        """Legt eine Zeitstempel-Kopie von src in BACKUP_DIR an und behält die letzten `keep`."""
+        try:
+            if not src.exists():
+                return
+            BACKUP_DIR.mkdir(exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            shutil.copy2(src, BACKUP_DIR / f"{src.stem}__{stamp}{src.suffix}")
+            backups = sorted(BACKUP_DIR.glob(f"{src.stem}__*{src.suffix}"))
+            for old in backups[:-keep]:
+                old.unlink(missing_ok=True)
         except Exception:
             pass
 
@@ -1205,6 +1232,8 @@ class RktApp(ctk.CTk):
     def bind_shortcuts(self):
         self.bind_all("<Command-o>", lambda e: self.load_project())
         self.bind_all("<Control-o>", lambda e: self.load_project())
+        self.bind_all("<Command-n>", lambda e: self.add_new_entry())
+        self.bind_all("<Control-n>", lambda e: self.add_new_entry())
         self.bind_all("<Command-i>", lambda e: self.load_file())
         self.bind_all("<Control-i>", lambda e: self.load_file())
         self.bind_all("<Command-s>", lambda e: self.save_project())
@@ -1355,6 +1384,9 @@ class RktApp(ctk.CTk):
             row=0, column=1, sticky="ew")
         ctk.CTkButton(search_bar, text="✕", width=32, height=28,
                       command=lambda: self._rows_search_var.set("")).grid(row=0, column=2, padx=(6, 0))
+        ctk.CTkButton(search_bar, text="+ Neuer Dienst", height=28,
+                      fg_color="#2FA572", hover_color="#278B60",
+                      command=self.add_new_entry).grid(row=0, column=3, padx=(10, 0))
         self._rows_search_var.trace_add("write", lambda *_: self._on_rows_search())
 
         self.rows_tree = self.create_tree(
@@ -1493,6 +1525,7 @@ class RktApp(ctk.CTk):
             file_menu.add_command(label="Speichern  ⌘S", command=self.save_project)
             file_menu.add_command(label="Speichern unter…  ⌘⇧S", command=self.save_project_as)
             file_menu.add_separator()
+            file_menu.add_command(label="Neuer Dienst…  ⌘N", command=self.add_new_entry)
             file_menu.add_command(label="CSV / Excel importieren  ⌘I", command=self.load_file)
             file_menu.add_command(label="Copy/Paste öffnen  ⌘V", command=self.open_paste_dialog)
             file_menu.add_separator()
@@ -1818,6 +1851,11 @@ class RktApp(ctk.CTk):
         if not self.df_all.empty:
             if not messagebox.askyesno("Daten löschen", "Möchtest du wirklich alle geladenen Daten löschen?"):
                 return
+            # Sicherheitsnetz: aktuellen Stand sichern, bevor alles verworfen wird
+            self.autosave_data()
+            self._rotate_backup(AUTOSAVE_FILE)
+            if self._project_file:
+                self._rotate_backup(Path(self._project_file))
 
         self.df_all = pd.DataFrame(columns=["#", "Datum", "Art", "Einheit", "Beschreibung", "Std.", "*"])
         self.source_name = "Keine Daten geladen"
@@ -2793,6 +2831,8 @@ exit 0
                 "chart_mode": self.current_chart_mode,
                 "source_name": self.source_name,
             }
+            # Vor dem Überschreiben eine rollierende Sicherung der bisherigen Datei anlegen
+            self._rotate_backup(Path(self._project_file))
             save_project_file(Path(self._project_file), self.df_all, state)
             self._dirty = False
             self.update_title_bar()
@@ -2987,6 +3027,75 @@ exit 0
         self.update_filter_options()
         self.refresh_views()
         self.autosave_data()
+
+    def add_new_entry(self):
+        """Öffnet einen Dialog zum manuellen Erfassen eines einzelnen Dienstes."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Neuer Dienst")
+        dialog.geometry("500x360")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+        dialog.grid_columnconfigure(1, weight=1)
+
+        initial = {
+            "Datum": datetime.now().strftime("%d.%m.%Y"),
+            "Art": "RKT-FRW",
+            "Einheit": "",
+            "Beschreibung": "",
+            "Std.": "",
+        }
+        fields = ["Datum", "Art", "Einheit", "Beschreibung", "Std."]
+        vars_ = {}
+        for i, field in enumerate(fields):
+            ctk.CTkLabel(dialog, text=field + ":").grid(row=i, column=0, padx=16, pady=8, sticky="e")
+            var = tk.StringVar(value=initial.get(field, ""))
+            vars_[field] = var
+            if field == "Art":
+                ctk.CTkOptionMenu(dialog, values=[o for o in ART_OPTIONS if o != "Alle"],
+                                  variable=var).grid(row=i, column=1, padx=16, pady=8, sticky="ew")
+            else:
+                ctk.CTkEntry(dialog, textvariable=var).grid(row=i, column=1, padx=16, pady=8, sticky="ew")
+
+        def commit():
+            new_row = {"#": 0, "Datum": "", "Art": "", "Einheit": "", "Beschreibung": "", "Std.": 0.0, "*": ""}
+            for field, var in vars_.items():
+                val = var.get()
+                if field == "Std.":
+                    try:
+                        val = float(val.replace(",", "."))
+                    except ValueError:
+                        messagebox.showwarning("Ungültig", "Stunden = Zahl")
+                        return
+                elif field == "Datum":
+                    dt = pd.to_datetime(val, dayfirst=True, errors="coerce")
+                    if pd.isna(dt):
+                        messagebox.showwarning("Ungültiges Datum", "Format: TT.MM.JJJJ")
+                        return
+                    val = dt.strftime("%d.%m.%Y")
+                new_row[field] = val
+
+            add_df = pd.DataFrame([new_row])
+            self.df_all = pd.concat([self.df_all, add_df], ignore_index=True)
+            if "#" in self.df_all.columns:
+                self.df_all["#"] = range(1, len(self.df_all) + 1)
+
+            if "Quelle:" not in self.source_name:
+                self.source_name = f"Quelle:\nManuelle Eingabe\n\nDatensätze:\n{len(self.df_all)}"
+                self.source_label.configure(text=self.source_name)
+
+            self._dirty = True
+            self.update_title_bar()
+            self.update_filter_options()
+            self.refresh_views()
+            self.autosave_data()
+            self.set_status("Neuer Dienst hinzugefügt")
+            dialog.destroy()
+
+        btns = ctk.CTkFrame(dialog, fg_color="transparent")
+        btns.grid(row=len(fields), column=0, columnspan=2, pady=(12, 16))
+        ctk.CTkButton(btns, text="Hinzufügen", command=commit, fg_color="#2FA572", hover_color="#278B60").pack(side="left", padx=8)
+        ctk.CTkButton(btns, text="Abbrechen", command=dialog.destroy, fg_color="#555B66", hover_color="#464B54").pack(side="left", padx=8)
 
     def _edit_selected_row(self):
         selected = self.rows_tree.selection()

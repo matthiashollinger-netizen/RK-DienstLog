@@ -26,3 +26,12 @@ dmg_build/
 
 # Claude Code internal
 .claude/
+
+# Alte Programmversionen (History bleibt in früheren Commits erhalten)
+old/
+
+# Lokale Build-Artefakte / Streukopien
+*.spec.cpgz
+RK_DienstLog_*_mac.zip
+"update *.json"
+version_2_*.json
