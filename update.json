@@ -1,8 +1,12 @@
 {
-  "version": "3.0.3",
-  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v3.0.3/RK_DienstLog_3.0.3_mac.zip",
-  "windows_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v3.0.3/RK_DienstLog_Setup_3.0.3.exe",
+  "version": "3.0.4",
+  "mac_zip_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v3.0.4/RK_DienstLog_3.0.4_mac.zip",
+  "windows_url": "https://github.com/matthiashollinger-netizen/RK-DienstLog/releases/download/v3.0.4/RK_DienstLog_Setup_3.0.4.exe",
   "changelog": [
-    "Stunden-Umrechnung auf Kalenderbasis: 1 Tag = 24 h, 1 Woche = 168 h, 1 Monat = 730 h, 1 Jahr = 8760 h"
+    "Code-Audit: 16 bestätigte Bugs behoben",
+    "Dubletten-Erkennung & Import-Dedup repariert",
+    "Monats-Drilldown, Inline-Datum-Edit und Copy/Paste-Übernahme gefixt",
+    "Heatmap: alle Jahre auswählbar; Excel-Datumsserien korrekt",
+    "Robustheit & CI/CD-Verbesserungen"
   ]
 }

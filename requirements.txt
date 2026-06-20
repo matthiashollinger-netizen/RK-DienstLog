@@ -1,0 +1,11 @@
+# RK DienstLog – gepinnte Abhängigkeiten für reproduzierbare Builds.
+# Versionen entsprechen der lokal getesteten Umgebung (Python 3.12+).
+# Plattformspezifisch: pyobjc-framework-Cocoa wird nur im macOS-Build installiert.
+customtkinter==5.2.2
+pandas==3.0.2
+numpy==2.4.4
+matplotlib==3.10.9
+pillow==12.2.0
+certifi==2026.4.22
+openpyxl==3.1.5
+pyinstaller==6.20.0

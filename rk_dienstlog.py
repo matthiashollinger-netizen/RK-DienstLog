@@ -101,6 +101,20 @@ def _validate_download_url(url: str) -> str:
 
 CHANGELOG_TEXT = """RK DienstLog – Changelog
 
+Version 3.0.4
+- Großer Code-Audit: 16 bestätigte Bugs behoben.
+- Dubletten-Erkennung: Whitespace-Normalisierung repariert (Mehrfach-Leerzeichen kollabieren jetzt korrekt).
+- Import: identische Zeilen innerhalb desselben Imports werden nun auch als Dubletten erkannt.
+- Dubletten-Dialog: Schließen über das Fenster-X verwirft nicht mehr den ganzen Import.
+- Monats-Drilldown (Doppelklick) filtert jetzt korrekt auf Monat + Jahr statt auf eine leere Liste.
+- Inline-Bearbeitung von Datumswerten wird auf TT.MM.JJJJ normalisiert (richtige Monatszuordnung).
+- Copy/Paste: Übernehmen liest immer den aktuellen Textfeld-Inhalt (kein veralteter Stand mehr).
+- Cmd/Strg+V im Suchfeld/Textfeld fügt wieder normal ein, statt den Paste-Dialog zu öffnen.
+- Excel-Datumsserien werden korrekt umgerechnet (nicht mehr fälschlich 01.01.1970).
+- Heatmap: alle Jahre auswählbar (vorher max. 6); 31.12. in Schaltjahren wird nicht mehr abgeschnitten.
+- Robuster: defekte settings.json, fehlende Monatsdaten beim Export, Update-Neustart bei ungespeicherten Änderungen.
+- CI/CD: gepinnte Abhängigkeiten (requirements.txt), idempotenter Release-Schritt.
+
 Version 3.0.3
 - Gesamtstunden-Karte: Umrechnung auf Kalenderbasis (1 Tag = 24 h, 1 Woche = 168 h, 1 Monat = 730 h, 1 Jahr = 8760 h).
 
@@ -231,7 +245,6 @@ APP_DIR = Path.home() / ".rk_dienstlog"
 APP_DIR.mkdir(exist_ok=True)
 SETTINGS_FILE = APP_DIR / "settings.json"
 AUTOSAVE_FILE = APP_DIR / "autosave.csv"
-RECENT_FILE = APP_DIR / "recent.json"
 
 ART_OPTIONS = [
     "RKT-FRW",
@@ -282,6 +295,15 @@ def format_hours(value: float) -> str:
 def format_date(value):
     if pd.isna(value):
         return ""
+    # Rohe Zahlen (Excel-Seriennummern) nicht als Nanosekunden seit Epoch deuten,
+    # sondern als Excel-Datum (origin 1899-12-30) – sonst wird z.B. 45000 zu 01.01.1970.
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            if 20000 <= float(value) <= 80000:  # plausibler Datumsbereich ~1954..2119
+                return pd.to_datetime(value, unit="D", origin="1899-12-30").strftime("%d.%m.%Y")
+            return ""
+        except Exception:
+            return ""
     try:
         dt = pd.to_datetime(value, dayfirst=True, errors="coerce")
         if pd.isna(dt):
@@ -339,7 +361,7 @@ def prepare_duplicate_key(row) -> tuple:
 
     def norm(value):
         value = clean_text(value).lower().strip()
-        value = re.sub(r"\\s+", " ", value)
+        value = re.sub(r"\s+", " ", value)
         value = value.replace("–", "-").replace("—", "-")
         return value
 
@@ -350,52 +372,11 @@ def prepare_duplicate_key(row) -> tuple:
 
     return (date_value, art, unit, desc, hours)
 
-def merge_without_duplicates(existing_df: pd.DataFrame, new_df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
-    """Hängt neue Daten an bestehende an und überspringt Dubletten."""
-    if existing_df.empty:
-        return new_df.copy(), len(new_df), 0
-
-    existing = existing_df.copy()
-    new = new_df.copy()
-
-    existing_keys = set(existing.apply(prepare_duplicate_key, axis=1).tolist())
-
-    rows_to_add = []
-    skipped = 0
-
-    for _, row in new.iterrows():
-        key = prepare_duplicate_key(row)
-        if key in existing_keys:
-            skipped += 1
-            continue
-
-        existing_keys.add(key)
-        rows_to_add.append(row)
-
-    if rows_to_add:
-        add_df = pd.DataFrame(rows_to_add, columns=new.columns)
-        merged = pd.concat([existing, add_df], ignore_index=True)
-    else:
-        merged = existing
-
-    # Sicherheit: auch bereits entstandene Dubletten nach gleichem Schlüssel entfernen
-    before_final = len(merged)
-    merged["_dup_key"] = merged.apply(prepare_duplicate_key, axis=1)
-    merged = merged.drop_duplicates(subset=["_dup_key"], keep="first").drop(columns=["_dup_key"])
-    skipped += before_final - len(merged)
-
-    # Nummerierung neu setzen, damit # sauber bleibt
-    if "#" in merged.columns:
-        merged["#"] = range(1, len(merged) + 1)
-
-    return merged.reset_index(drop=True), len(rows_to_add), skipped
-
-
 
 def read_input_file(path: str) -> pd.DataFrame:
     ext = Path(path).suffix.lower()
 
-    if ext in [".xlsx", ".xls"]:
+    if ext == ".xlsx":
         return pd.read_excel(path)
 
     if ext == ".csv":
@@ -404,7 +385,7 @@ def read_input_file(path: str) -> pd.DataFrame:
         except Exception:
             return pd.read_csv(path, sep=";", engine="python")
 
-    raise ValueError("Bitte eine .xlsx, .xls oder .csv Datei auswählen.")
+    raise ValueError("Bitte eine .xlsx oder .csv Datei auswählen.")
 
 
 def normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -601,6 +582,7 @@ def find_import_diff(existing_df: pd.DataFrame, new_df: pd.DataFrame):
             duplicates.append(row.to_dict())
         else:
             unique.append(row.to_dict())
+            existing_keys.add(key)  # interne Dubletten innerhalb des Imports auch erkennen
     return unique, duplicates
 
 
@@ -619,6 +601,8 @@ class DuplicateReviewDialog(ctk.CTkToplevel):
         self.transient(parent)
         self.grab_set()
         self.bind("<Escape>", lambda e: self._skip_all())
+        # OS-Schließen (X) wie Escape behandeln: Unique-Zeilen importieren, Dubletten überspringen
+        self.protocol("WM_DELETE_WINDOW", self._skip_all)
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
@@ -836,6 +820,10 @@ class PasteDialog(ctk.CTkToplevel):
             if not df.empty:
                 self.preview_df = df
                 self.fill_preview(df)
+            else:
+                # Stale-State vermeiden: passt der Text nicht mehr, Vorschau + Cache leeren
+                self.preview_df = pd.DataFrame(columns=["#", "Datum", "Art", "Einheit", "Beschreibung", "Std.", "*"])
+                self.clear_preview()
         except Exception:
             pass
 
@@ -861,8 +849,8 @@ class PasteDialog(ctk.CTkToplevel):
             return
 
         try:
-            if self.preview_df.empty:
-                self.preview_df = parse_pasted_portal_text(text)
+            # Immer frisch aus dem aktuellen Textfeld parsen, nie dem evtl. veralteten Cache vertrauen
+            self.preview_df = parse_pasted_portal_text(text)
 
             if self.preview_df.empty:
                 raise ValueError("Keine Einträge erkannt. Bitte kopiere die Tabelle inklusive Datum, Art und Std. aus dem Portal.")
@@ -1169,7 +1157,8 @@ class RktApp(ctk.CTk):
     def load_settings(self):
         if SETTINGS_FILE.exists():
             try:
-                return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+                data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+                return data if isinstance(data, dict) else {}
             except Exception:
                 return {}
         return {}
@@ -1222,12 +1211,20 @@ class RktApp(ctk.CTk):
         self.bind_all("<Control-s>", lambda e: self.save_project())
         self.bind_all("<Command-S>", lambda e: self.save_project_as())
         self.bind_all("<Control-S>", lambda e: self.save_project_as())
-        self.bind_all("<Command-v>", lambda e: self.open_paste_dialog())
-        self.bind_all("<Control-v>", lambda e: self.open_paste_dialog())
+        self.bind_all("<Command-v>", self._on_global_paste)
+        self.bind_all("<Control-v>", self._on_global_paste)
         self.bind_all("<Command-e>", lambda e: self.open_export_dialog())
         self.bind_all("<Control-e>", lambda e: self.open_export_dialog())
         self.bind_all("<Command-l>", lambda e: self.toggle_theme())
         self.bind_all("<Control-l>", lambda e: self.toggle_theme())
+
+    def _on_global_paste(self, event=None):
+        # Cmd/Ctrl+V nur als Dialog-Shortcut, wenn der Fokus NICHT in einem Texteingabefeld liegt –
+        # sonst würde jedes Einfügen (auch im Suchfeld / in der Paste-Textbox) den Dialog öffnen.
+        focus = self.focus_get()
+        if isinstance(focus, (tk.Entry, tk.Text)):
+            return
+        self.open_paste_dialog()
 
     def create_ui(self):
         self.grid_columnconfigure(1, weight=1)
@@ -1235,7 +1232,7 @@ class RktApp(ctk.CTk):
 
         sidebar = ctk.CTkFrame(self, width=280, corner_radius=0)
         sidebar.grid(row=0, column=0, sticky="nsw")
-        sidebar.grid_rowconfigure(18, weight=1)
+        sidebar.grid_rowconfigure(19, weight=1)  # leerer Spacer schiebt den Darstellungs-Block nach unten
 
         ctk.CTkLabel(sidebar, text="RK DienstLog", font=ctk.CTkFont(size=26, weight="bold")).grid(row=0, column=0, padx=24, pady=(28, 8), sticky="w")
         ctk.CTkLabel(sidebar, text=APP_SUBTITLE, text_color="#AAB2C0").grid(row=1, column=0, padx=24, pady=(0, 14), sticky="w")
@@ -1269,12 +1266,12 @@ class RktApp(ctk.CTk):
 
         ctk.CTkButton(sidebar, text="Filter zurücksetzen", command=self.reset_filters, height=34, fg_color="#3A3F47", hover_color="#4A505A").grid(row=18, column=0, padx=22, pady=(4, 10), sticky="ew")
 
-        ctk.CTkLabel(sidebar, text="Darstellung", text_color="#AAB2C0").grid(row=19, column=0, padx=24, pady=(4, 2), sticky="w")
+        ctk.CTkLabel(sidebar, text="Darstellung", text_color="#AAB2C0").grid(row=20, column=0, padx=24, pady=(4, 2), sticky="w")
         self.theme_switch = ctk.CTkSegmentedButton(sidebar, values=["Dark", "Light"], variable=self.theme_var, command=self.change_theme)
-        self.theme_switch.grid(row=20, column=0, padx=22, pady=(0, 8), sticky="ew")
+        self.theme_switch.grid(row=21, column=0, padx=22, pady=(0, 8), sticky="ew")
 
         self.source_label = ctk.CTkLabel(sidebar, text=self.source_name, text_color="#AAB2C0", wraplength=230, justify="left")
-        self.source_label.grid(row=21, column=0, padx=24, pady=(10, 28), sticky="sw")
+        self.source_label.grid(row=22, column=0, padx=24, pady=(10, 28), sticky="sw")
 
         main = ctk.CTkFrame(self, fg_color="transparent")
         main.grid(row=0, column=1, sticky="nsew", padx=24, pady=24)
@@ -1690,9 +1687,9 @@ class RktApp(ctk.CTk):
     def reset_filters(self):
         self.filter_var.set("RKT-FRW")
         self.year_filter_var.set("Alle")
-        self.year_filter_var.set("Alle")
         self.month_filter_var.set("Alle")
         self.unit_filter_var.set("Alle")
+        self._rows_search_var.set("")
         self.refresh_views()
         self.set_status("Filter zurückgesetzt")
 
@@ -1702,7 +1699,13 @@ class RktApp(ctk.CTk):
             return
         values = self.month_tree.item(selected[0], "values")
         if values:
-            self.month_filter_var.set(values[0])
+            # Anzeige-Wert ist "MM/YYYY"; Filter erwarten Jahr "%Y" und Monat "%m" getrennt
+            parts = str(values[0]).split("/")
+            if len(parts) == 2:
+                self.year_filter_var.set(parts[1])
+                self.month_filter_var.set(parts[0])
+            else:
+                self.month_filter_var.set(values[0])
             self.refresh_views()
             self.tabs.set("Datensätze")
             self.set_status(f"Drilldown: Monat {values[0]}")
@@ -1722,9 +1725,9 @@ class RktApp(ctk.CTk):
         file = filedialog.askopenfilename(
             title="CSV oder Excel auswählen",
             filetypes=[
-                ("Excel/CSV Dateien", "*.xlsx *.xls *.csv"),
+                ("Excel/CSV Dateien", "*.xlsx *.csv"),
                 ("CSV Dateien", "*.csv"),
-                ("Excel Dateien", "*.xlsx *.xls"),
+                ("Excel Dateien", "*.xlsx"),
                 ("Alle Dateien", "*.*")
             ]
         )
@@ -1781,7 +1784,8 @@ class RktApp(ctk.CTk):
                     merged["#"] = range(1, len(merged) + 1)
             else:
                 merged = self.df_all.copy()
-            existing_src = self.source_name.splitlines()[1] if "Quelle:" in self.source_name else "Bestehende Daten"
+            src_lines = self.source_name.splitlines()
+            existing_src = src_lines[1] if ("Quelle:" in self.source_name and len(src_lines) > 1) else "Bestehende Daten"
             self.set_data(merged, f"{existing_src} + {source_name}")
             added = len(unique_rows) + len(extra_rows)
             skipped = len(duplicate_rows) - len(extra_rows)
@@ -2425,7 +2429,7 @@ class RktApp(ctk.CTk):
             self.update_failed(e)
             return
 
-        self.on_close()
+        self.on_close(force=True)
 
     def download_and_install_macos_update(self, update_info: dict):
         if sys.platform != "darwin":
@@ -2653,7 +2657,7 @@ exit 0
             self.update_failed(e)
             return
 
-        self.on_close()
+        self.on_close(force=True)
 
     def update_failed(self, error):
         try:
@@ -2701,10 +2705,12 @@ exit 0
                             export_df.to_excel(writer, sheet_name="Datensaetze", index=False)
 
                         if options.get("months"):
-                            monthly = self.get_monthly_summary(df).reset_index().rename(columns={"_month": "Monat"})
-                            monthly["Monat"] = monthly["Monat"].apply(format_month_display)
-                            monthly = monthly.rename(columns={"Eintraege": "Dienste"})
-                            monthly.to_excel(writer, sheet_name="Monate", index=False)
+                            ms = self.get_monthly_summary(df)
+                            if not ms.empty:
+                                monthly = ms.reset_index().rename(columns={"_month": "Monat"})
+                                monthly["Monat"] = monthly["Monat"].apply(format_month_display)
+                                monthly = monthly.rename(columns={"Eintraege": "Dienste"})
+                                monthly.to_excel(writer, sheet_name="Monate", index=False)
 
                         if options.get("units"):
                             units = self.get_unit_summary(df).reset_index()
@@ -2968,13 +2974,12 @@ exit 0
                 return
             self.df_all.loc[idx, col_name] = value
         elif col_name == "Datum":
-            try:
-                pd.to_datetime(new_value, dayfirst=True)
-            except Exception:
-                messagebox.showwarning("Ungültiges Datum",
-                                       "Format: TT.MM.JJJJ")
+            dt = pd.to_datetime(new_value, dayfirst=True, errors="coerce")
+            if pd.isna(dt):
+                messagebox.showwarning("Ungültiges Datum", "Format: TT.MM.JJJJ")
                 return
-            self.df_all.loc[idx, col_name] = new_value
+            # Auf kanonisches TT.MM.JJJJ normalisieren (wie der Import-Pfad), sonst falsche Monatszuordnung
+            self.df_all.loc[idx, col_name] = dt.strftime("%d.%m.%Y")
         else:
             self.df_all.loc[idx, col_name] = new_value
         self._dirty = True
@@ -3025,6 +3030,12 @@ exit 0
                     except ValueError:
                         messagebox.showwarning("Ungültig", "Stunden = Zahl")
                         return
+                elif field == "Datum":
+                    dt = pd.to_datetime(val, dayfirst=True, errors="coerce")
+                    if pd.isna(dt):
+                        messagebox.showwarning("Ungültiges Datum", "Format: TT.MM.JJJJ")
+                        return
+                    val = dt.strftime("%d.%m.%Y")
                 self.df_all.loc[idx, field] = val
             self._dirty = True
             self.update_title_bar()
@@ -3129,9 +3140,10 @@ exit 0
                 self._heatmap_year_var.set(str(available_years[0]))
 
             if len(available_years) > 1:
-                ctk.CTkSegmentedButton(
+                # OptionMenu statt SegmentedButton: auch >6 Jahre bleiben auswählbar
+                ctk.CTkOptionMenu(
                     right,
-                    values=[str(y) for y in available_years[:6]],
+                    values=[str(y) for y in available_years],
                     variable=self._heatmap_year_var,
                     command=lambda _: self._redraw_heatmap(right, df, available_years)
                 ).grid(row=1, column=0, sticky="w", padx=12, pady=(0, 6))
@@ -3271,7 +3283,8 @@ exit 0
         jan1 = date_type(year, 1, 1)
         # Align to Monday
         start = jan1 - timedelta(days=jan1.weekday())
-        weeks = 53
+        # 54 statt 53: deckt auch den 31.12. in Schaltjahren ab, die an einem Sonntag beginnen
+        weeks = 54
         ax.set_xlim(-0.5, weeks - 0.5)
         ax.set_ylim(-0.5, 6.5)
         ax.invert_yaxis()
@@ -3301,8 +3314,10 @@ exit 0
         fig.tight_layout(pad=0.4)
         return fig
 
-    def on_close(self):
-        if self._dirty and not self.df_all.empty:
+    def on_close(self, force=False):
+        # force=True überspringt den Dirty-Dialog (z.B. beim Update-Neustart),
+        # damit der Prozess garantiert endet und der Updater nicht in der PID-Warteschleife hängt.
+        if not force and self._dirty and not self.df_all.empty:
             answer = messagebox.askyesnocancel(
                 "Ungespeicherte Änderungen",
                 "Es gibt ungespeicherte Änderungen.\n\nJetzt speichern?"

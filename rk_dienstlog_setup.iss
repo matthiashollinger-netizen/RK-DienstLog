@@ -1,6 +1,6 @@
 #define MyAppName "RK DienstLog"
 #ifndef MyAppVersion
-  #define MyAppVersion "2.9.2"
+  #error "MyAppVersion nicht definiert - mit /DMyAppVersion=<version> kompilieren (CI setzt das automatisch)."
 #endif
 #define MyAppPublisher "Matthias Hollinger"
 #define MyAppExeName "RK DienstLog.exe"

@@ -17,10 +17,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install \
-            customtkinter pandas matplotlib pyinstaller pillow \
-            pyobjc-framework-Cocoa \
-            certifi openpyxl
+          pip install -r requirements.txt
+          pip install pyobjc-framework-Cocoa
 
       - name: Build app bundle
         run: pyinstaller "RK DienstLog.spec"
@@ -48,7 +46,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install Python dependencies
-        run: pip install customtkinter pandas matplotlib pyinstaller pillow certifi openpyxl
+        run: pip install -r requirements.txt
 
       - name: Generate Windows icon from PNG
         run: python -c "from PIL import Image; Image.open('rk_dienstlog_icon.png').save('rk_dienstlog_windows_fixed.ico')"
@@ -103,7 +101,11 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          gh release create "$GITHUB_REF_NAME" \
-            --title "RK DienstLog v${VERSION}" \
-            --generate-notes \
-            artifacts/*
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" artifacts/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "RK DienstLog v${VERSION}" \
+              --generate-notes \
+              artifacts/*
+          fi
